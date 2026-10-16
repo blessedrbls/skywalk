@@ -1,0 +1,2 @@
+﻿# build.bat должен иметь переносы строк Windows (CRLF), иначе cmd его ломает
+*.bat text eol=crlf
