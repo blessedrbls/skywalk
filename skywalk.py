@@ -247,7 +247,7 @@ def active_window_title():
 
 
 
-VERSION = "demo 8.5"   # пока проект в демо — пишем «demo», без «v»
+VERSION = "demo 8.6"   # пока проект в демо — пишем «demo», без «v»
 
 # ================== Журнал событий (для поиска багов) ==================
 LOG = deque(maxlen=500)                 # последние 500 событий
@@ -502,7 +502,7 @@ def clean_line(line):
 def nick_key(text):
     """Ник «для сравнения»: только буквы и цифры (любого языка), маленькими.
     Сервер пишет ник в консоль не всегда так, как он записан в Steam: например, из
-    «fuckin'haze(алекс)» убирает апостроф → «fuckinhaze(алекс)». Знаки препинания не сравниваем."""
+    «Player'Name(ник)» убирает апостроф → «PlayerName(ник)». Знаки препинания не сравниваем."""
     return "".join(ch for ch in text.lower() if ch.isalnum())
 
 
@@ -1600,6 +1600,10 @@ def tr(name, **kw):
 APPDATA = os.environ.get("APPDATA", os.path.expanduser("~"))
 SETTINGS_PATH = os.path.join(APPDATA, "Skywalk", "settings.json")
 OLD_SETTINGS_PATH = os.path.join(APPDATA, "BlessKey", "settings.json")   # до переименования
+# Рекорды и история дублируются в отдельный файл. Старые версии Skywalk (до 7.2) о рекордах не знают:
+# если такую запустить, она перезапишет settings.json БЕЗ рекордов. А этот файл она не тронет —
+# и новая версия при запуске вернёт рекорды из него (так 12.11.2026 пропали рекорды у автора).
+RECORDS_PATH = os.path.join(APPDATA, "Skywalk", "records.json")
 
 
 # настройки внешнего вида
@@ -1679,6 +1683,7 @@ def write_crash(text):
 
 
 def save_settings(data):
+    save_records_copy(data.get("prefs", {}))
     try:
         os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
         tmp = SETTINGS_PATH + ".tmp"
@@ -1687,6 +1692,54 @@ def save_settings(data):
         os.replace(tmp, SETTINGS_PATH)      # сначала пишем во временный файл — так файл не побьётся
     except OSError as e:
         log(f"не удалось сохранить настройки: {e}")
+
+
+def save_records_copy(p):
+    """Копия рекордов и истории в records.json. Пустые тоже пишем, если файл уже есть: иначе после
+    кнопки «сбросить рекорды» старые вернулись бы из копии при следующем запуске."""
+    recs, hist = p.get("records"), p.get("history")
+    if not recs and not hist and not os.path.exists(RECORDS_PATH):
+        return
+    try:
+        tmp = RECORDS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"records": recs or {}, "history": hist or {}}, f, ensure_ascii=False)
+        os.replace(tmp, RECORDS_PATH)
+    except OSError as e:
+        log(f"не удалось сохранить копию рекордов: {e}")
+
+
+def merge_records(p):
+    """Добавить в prefs из settings.json то, что есть в records.json: по каждому типу прыжка — лучший
+    из двух рекордов, по каждому дню истории — лучший прыжок. Так рекорды не пропадут, даже если
+    старая версия программы перезаписала settings.json без них."""
+    try:
+        with open(RECORDS_PATH, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return p
+    if not isinstance(saved, dict):
+        return p
+    p = dict(p)
+    recs = dict(p.get("records") if isinstance(p.get("records"), dict) else {})
+    for abbr, rec in (saved.get("records") or {}).items():
+        if not isinstance(rec, dict) or not isinstance(rec.get("dist"), (int, float)):
+            continue
+        cur = recs.get(abbr)
+        if not isinstance(cur, dict) or not isinstance(cur.get("dist"), (int, float)) or cur["dist"] < rec["dist"]:
+            recs[abbr] = rec
+    p["records"] = recs
+    hist = {a: dict(d) for a, d in (p.get("history") or {}).items() if isinstance(d, dict)} \
+        if isinstance(p.get("history"), dict) else {}
+    for abbr, days in (saved.get("history") or {}).items():
+        if not isinstance(days, dict):
+            continue
+        h = hist.setdefault(abbr, {})
+        for day, v in days.items():
+            if isinstance(v, (int, float)) and (not isinstance(h.get(day), (int, float)) or h[day] < v):
+                h[day] = v
+    p["history"] = hist
+    return p
 
 
 def load_settings():
@@ -1699,7 +1752,9 @@ def load_settings():
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return                               # файла ещё нет (первый запуск) или он битый
+        data = {}                            # файла ещё нет (первый запуск) или он битый — но рекорды
+    if not isinstance(data, dict):           # могут лежать в records.json, их всё равно подхватим
+        data = {}
     if data.get("lang") in TR:
         LANG = data["lang"]
     snd = data.get("sound", {})
@@ -1719,6 +1774,9 @@ def load_settings():
     if isinstance(data.get("toggle_vk"), int) and data.get("toggle_name"):
         state["toggle_vk"], state["toggle_name"] = data["toggle_vk"], str(data["toggle_name"])
     p = data.get("prefs", {})
+    if not isinstance(p, dict):
+        p = {}
+    p = merge_records(p)                     # рекорды из records.json (если settings.json их «потерял»)
     if p.get("accent") in ACCENTS:
         prefs["accent"] = p["accent"]
         set_accent(p["accent"])
@@ -3028,6 +3086,8 @@ COACH_TYPES = ("LJ", "BH", "MBH", "WJ", "LAJ")
 # ================== Журнал версий («что нового») ==================
 # Новые версии — СВЕРХУ. Пишем коротко и понятно для игрока, строчными, без технических слов.
 CHANGELOG = [
+    ("demo 8.6", ["рекорды хранятся ещё и в отдельном файле — их не сотрёт даже старая версия программы"],
+                 ["records are also kept in a separate file — even an old version of the program can't erase them"]),
     ("demo 8.5", ["рекорды и сессия снова видят прыжки, если в нике есть апостроф или другие значки "
                   "(сервер убирает их из ника в консоли)"],
                  ["records and session see your jumps again when the nick has an apostrophe or other symbols"]),
@@ -5158,6 +5218,7 @@ if __name__ == "__main__":
         sys.exit(0)
     setup_timing()                             # герцовка монитора + точный таймер
     load_settings()
+    save_records_copy(prefs)                   # копия рекордов — сразу при запуске (см. RECORDS_PATH)
     refresh_cs2_binds()                        # какие клавиши в CS2 прыжок / присед / cp / tp
     rebuild_sounds()                           # звук мог поменяться после загрузки настроек
     ctk.set_appearance_mode("dark")
