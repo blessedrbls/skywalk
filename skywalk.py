@@ -247,7 +247,7 @@ def active_window_title():
 
 
 
-VERSION = "demo 8.6"   # пока проект в демо — пишем «demo», без «v»
+VERSION = "demo 8.7"   # пока проект в демо — пишем «demo», без «v»
 
 # ================== Журнал событий (для поиска багов) ==================
 LOG = deque(maxlen=500)                 # последние 500 событий
@@ -2588,50 +2588,58 @@ def suggest_maps(query, maps, live, limit=6):
 
 
 # Все KZ-карты Cybershoke и их тиры (1–9) — со страницы рекордов
-# cybershoke.net/cs2/leaderboard/kz/maps, 01.10.2026. Тир на сайте — картинка tiers/<номер>.svg.
+# cybershoke.net/cs2/leaderboard/kz/maps, обновлено 12.11.2026 (208 карт на сайте + 3 старые версии карт,
+# которых там уже нет: kz_mescaline_f, kz_retribution_v2_final, kz_stacy_xt). Тир на сайте — картинка tiers/<номер>.svg.
 # Вшиты в программу: у Cybershoke нет открытого API. Новые карты добавятся сами — с серверов
 # и из базы CS2KZ, только без тира (пока не обновим этот список).
 CYBERSHOKE_TIERS = {
     "bkz_evanstep": 4, "kz_16pillars": 2, "kz_2fast": 3, "kz_adv_cursedjourney": 4,
     "kz_aether_fix": 5, "kz_after_agitation_v2": 4, "kz_afterlife": 6, "kz_alfie": 5,
-    "kz_alice_fix": 4, "kz_alien_city": 6, "kz_alouette_fix": 3, "kz_amber_od": 3, "kz_ambition": 8,
-    "kz_angina_final": 7, "kz_angina_x": 8, "kz_antharas": 5, "kz_antimony": 4,
+    "kz_alice_fix": 3, "kz_alien_city": 6, "kz_alouette_fix": 3, "kz_amber_od": 3, "kz_ambition": 8,
+    "kz_angina_final": 7, "kz_angina_x": 8, "kz_antharas": 5, "kz_antimony": 4, "kz_baxter": 1,
     "kz_bhop_apricity": 6, "kz_bhop_koki_niwa": 6, "kz_bhop_slide": 6, "kz_bigcastle": 3,
-    "kz_blackness": 6, "kz_blockhardy2k": 3, "kz_bluekarko": 4, "kz_breezeblocks": 2,
-    "kz_brightblock": 1, "kz_celestial": 3, "kz_cf_foliage": 7, "kz_cf_slide": 3, "kz_checkmate": 2,
-    "kz_cheese": 2, "kz_cherry": 1, "kz_chloroplast": 6, "kz_colors": 3, "kz_combobreaker": 2,
-    "kz_communitybhop": 4, "kz_communityjump3": 4, "kz_custos": 5, "kz_d_decompile": 6,
-    "kz_dejavu": 3, "kz_demonhours": 4, "kz_dethroned": 5, "kz_devon": 3, "kz_divert": 6,
-    "kz_dojo": 3, "kz_drunkards": 6, "kz_dyd_ladderjumps": 4, "kz_dzy_beyond_v2": 2, "kz_echo": 2,
-    "kz_edp445": 2, "kz_ehcivec_final": 2, "kz_epiphany_v2": 4, "kz_fastcombowombo_v2": 3,
-    "kz_fastmap": 2, "kz_futureblock": 3, "kz_ggsh": 6, "kz_gigablock_cs2": 2, "kz_greebochki": 3,
-    "kz_grotto": 2, "kz_haste": 4, "kz_hb_smieszneznaczki": 3, "kz_hex": 3, "kz_highland": 2,
-    "kz_hillside": 1, "kz_hitech": 5, "kz_hoist": 5, "kz_igneous": 2, "kz_illusion_gfix": 4,
-    "kz_insomnia": 4, "kz_itz_updown": 4, "kz_jakke": 5, "kz_key": 2, "kz_kiwi_cod": 6,
-    "kz_kiwi_hym": 7, "kz_kiwi_lars": 4, "kz_kiwibridge": 1, "kz_kiwiconsecration": 7,
-    "kz_kiwideath": 7, "kz_kiwiexophoric": 7, "kz_kiwiexultation": 6, "kz_kiwifactory": 1,
-    "kz_kiwifrozen": 6, "kz_kiwionerous": 2, "kz_kiwiparadise": 2, "kz_kiwipsychosis": 9,
-    "kz_kiwiqualia": 5, "kz_kiwislide": 8, "kz_kiwitech": 5, "kz_kiwiterror": 8, "kz_kiwitown": 2,
+    "kz_blackness": 6, "kz_blockhardy2k": 3, "kz_bluekarko": 4, "kz_bozo": 6, "kz_breezeblocks": 2,
+    "kz_brightblock": 1, "kz_celestial": 3, "kz_cf_chasm": 2, "kz_cf_foliage": 6, "kz_cf_slide": 3,
+    "kz_checkmate": 2, "kz_cheese": 2, "kz_cherry": 1, "kz_chloroplast": 6, "kz_claustrophobia": 8,
+    "kz_colors": 3, "kz_columns": 6, "kz_combobreaker": 2, "kz_communitybhop": 5,
+    "kz_communityjump3": 4, "kz_cryoheaven": 5, "kz_custos": 5, "kz_d_decompile": 6, "kz_dejavu": 3,
+    "kz_demonhours": 4, "kz_dethroned": 5, "kz_devon": 3, "kz_divert": 6, "kz_dojo": 3,
+    "kz_drunkards": 6, "kz_dyd_ladderjumps": 4, "kz_dzy_beyond_v2": 2, "kz_echo": 2, "kz_edp445": 2,
+    "kz_ehcivec_final": 2, "kz_epiphany_v2": 4, "kz_fastcombowombo_v2": 3, "kz_fastmap": 2,
+    "kz_futureblock": 3, "kz_ggsh": 6, "kz_gigablock_cs2": 2, "kz_greebochki": 3, "kz_grotto": 2,
+    "kz_gy_agitation": 4, "kz_haste": 4, "kz_hb_smieszneznaczki": 3, "kz_headbongo": 4, "kz_hex": 3,
+    "kz_highland": 2, "kz_hillside": 1, "kz_hitech": 5, "kz_hoist": 5, "kz_holyspace": 3,
+    "kz_igneous": 2, "kz_illusion_gfix": 4, "kz_insomnia": 4, "kz_isuper": 5, "kz_itz_updown": 4,
+    "kz_jakke": 5, "kz_key": 2, "kz_kiwi_cod": 6, "kz_kiwi_hym": 7, "kz_kiwi_lars": 4,
+    "kz_kiwibridge": 1, "kz_kiwichthonic": 6, "kz_kiwiconsecration": 7, "kz_kiwiconvulsion": 9,
+    "kz_kiwideath": 7, "kz_kiwidesecration": 5, "kz_kiwiexophoric": 7, "kz_kiwiexultation": 6,
+    "kz_kiwifactory": 1, "kz_kiwifrozen": 6, "kz_kiwimind": 6, "kz_kiwinoumena": 2,
+    "kz_kiwionerous": 2, "kz_kiwiparadise": 2, "kz_kiwipsychosis": 9, "kz_kiwiqualia": 5,
+    "kz_kiwislide": 8, "kz_kiwispin": 2, "kz_kiwitech": 5, "kz_kiwiterror": 8, "kz_kiwitown": 2,
     "kz_kiwivision": 2, "kz_kukkojapallokidutus": 6, "kz_kuutio": 3, "kz_kzro_hardhoodoo": 6,
-    "kz_kzro_mountainroad": 5, "kz_kzro_syotiles": 2, "kz_labour": 3, "kz_ladderhell": 4,
-    "kz_lean": 1, "kz_lego": 2, "kz_leto": 2, "kz_leviathan": 3, "kz_lionheart": 6, "kz_lmn": 1,
-    "kz_loftroofs": 3, "kz_longjumps_easy": 3, "kz_longjumps_space": 4, "kz_lumen": 3, "kz_lust": 2,
-    "kz_luv_less": 4, "kz_madhatter": 3, "kz_maga": 6, "kz_mandelbrot": 4, "kz_maya": 3,
-    "kz_maze": 2, "kz_mescaline_f": 4, "kz_mess": 5, "kz_mjs_katharaxith": 8, "kz_monstrosity": 6,
-    "kz_moon_fix": 7, "kz_moorerutan": 2, "kz_mz": 1, "kz_natureblock": 2, "kz_niche": 2,
-    "kz_nightcastle": 4, "kz_noir": 2, "kz_obsidian": 2, "kz_okaychamp": 5, "kz_old_depression": 4,
-    "kz_oloramasa": 6, "kz_opus": 2, "kz_otakuroom_v3": 3, "kz_outback": 3, "kz_overworld_a2": 2,
-    "kz_pendulum": 6, "kz_persona_is_a_furry": 5, "kz_phamous": 2, "kz_psychosomatic": 6,
-    "kz_rectangle": 4, "kz_retribution_v2_final": 6, "kz_royalcapital": 2, "kz_sanctum": 3,
-    "kz_serfdom": 2, "kz_shift": 3, "kz_sillychicken": 4, "kz_skytower": 3, "kz_slide_agave": 8,
-    "kz_slide_arid": 8, "kz_slide_deee": 6, "kz_slide_era": 5, "kz_slide_isnt_kz": 5,
-    "kz_slidebober": 6, "kz_slowerrun": 7, "kz_slowrun": 6, "kz_sp1_behold": 3,
-    "kz_sp1_bloodyljs_v2": 6, "kz_sp1_strafechampion": 7, "kz_spacemario_h": 6, "kz_spire": 2,
-    "kz_spiritblockv2": 2, "kz_stacy_xt": 9, "kz_summercliff2": 2, "kz_sunstone": 2,
-    "kz_sxb2_isbhop": 5, "kz_sxb2_onlyslide": 4, "kz_sxb2_remake": 4, "kz_topsecret": 4,
-    "kz_unmake": 7, "kz_valley": 2, "kz_variety_fix": 4, "kz_variety_x": 9, "kz_victoria": 1,
-    "kz_village": 3, "kz_wasabi": 2, "kz_wetlands": 2, "kz_why": 4, "kz_woodstock_v2": 1,
-    "kz_zoomer_fix": 4, "kzpro_only_up_extended": 3, "skz_bananaysoda_2": 5,
+    "kz_kzro_mountainroad": 5, "kz_kzro_syotiles": 2, "kz_labour": 3, "kz_ladderdespair": 5,
+    "kz_ladderhell": 4, "kz_lean": 1, "kz_lego": 2, "kz_leto": 2, "kz_leviathan": 3,
+    "kz_lionheart": 6, "kz_lmn": 1, "kz_loftroofs": 3, "kz_longjumps_easy": 3,
+    "kz_longjumps_space": 4, "kz_lumen": 3, "kz_lust": 2, "kz_luv_less": 4, "kz_madhatter": 3,
+    "kz_maga": 6, "kz_mandelbrot": 4, "kz_maya": 3, "kz_maze": 2, "kz_mediumcastle": 3,
+    "kz_mescaline": 4, "kz_mescaline_f": 4, "kz_mess": 5, "kz_minecraft_village": 5,
+    "kz_mjs_katharaxith": 8, "kz_monstrosity": 6, "kz_moon_fix": 7, "kz_moorerutan": 2, "kz_mz": 1,
+    "kz_natureblock": 2, "kz_niche": 2, "kz_nightcastle": 4, "kz_noir": 2, "kz_obsidian": 2,
+    "kz_okaychamp": 5, "kz_old_depression": 4, "kz_oloramasa": 6, "kz_opus": 2,
+    "kz_otakuroom_v3": 3, "kz_outback": 3, "kz_overworld_a2": 2, "kz_p1": 6, "kz_pendulum": 6,
+    "kz_persona_is_a_furry": 5, "kz_phamous": 2, "kz_procrastination_f": 6, "kz_psychosomatic": 6,
+    "kz_rectangle": 4, "kz_retribution": 6, "kz_retribution_v2_final": 6, "kz_royalcapital": 2,
+    "kz_sakhalin": 6, "kz_sanctum": 3, "kz_serfdom": 2, "kz_shift": 3, "kz_sillychicken": 4,
+    "kz_skytower": 3, "kz_slide_agave": 7, "kz_slide_arid": 7, "kz_slide_deee": 6,
+    "kz_slide_era": 5, "kz_slide_isnt_kz": 5, "kz_slide_red": 6, "kz_slidebober": 6,
+    "kz_slowerrun": 7, "kz_slowrun": 6, "kz_smallcastle": 3, "kz_sp1_behold": 3,
+    "kz_sp1_bloodyljs_v2": 6, "kz_sp1_strafechampion": 7, "kz_spacemario_h": 6,
+    "kz_spacemario_xt": 7, "kz_spire": 2, "kz_spiritblockv2": 2, "kz_stacy_xt": 9,
+    "kz_summercliff2": 2, "kz_sunstone": 2, "kz_sxb2_biewan": 5, "kz_sxb2_isbhop": 5,
+    "kz_sxb2_onlyslide": 4, "kz_sxb2_remake": 4, "kz_tense": 7, "kz_topsecret": 4, "kz_unmake": 7,
+    "kz_valley": 2, "kz_variety_fix": 4, "kz_variety_x": 9, "kz_victoria": 1, "kz_village": 3,
+    "kz_void": 3, "kz_wasabi": 2, "kz_wetlands": 2, "kz_why": 4, "kz_woodstock_v2": 1,
+    "kz_zoomer_fix": 4, "kzpro_only_up_extended": 3, "skz_bananaysoda_2": 5, "vly_nantu_d": 7,
 }
 CYBERSHOKE_MAPS = sorted(CYBERSHOKE_TIERS)
 
@@ -3086,6 +3094,8 @@ COACH_TYPES = ("LJ", "BH", "MBH", "WJ", "LAJ")
 # ================== Журнал версий («что нового») ==================
 # Новые версии — СВЕРХУ. Пишем коротко и понятно для игрока, строчными, без технических слов.
 CHANGELOG = [
+    ("demo 8.7", ["31 новая карта cybershoke с тирами (подсказки и тир в слежке), у 5 карт обновлён тир"],
+                 ["31 new cybershoke maps with tiers (suggestions and tier in map watch), 5 tiers updated"]),
     ("demo 8.6", ["рекорды хранятся ещё и в отдельном файле — их не сотрёт даже старая версия программы"],
                  ["records are also kept in a separate file — even an old version of the program can't erase them"]),
     ("demo 8.5", ["рекорды и сессия снова видят прыжки, если в нике есть апостроф или другие значки "
