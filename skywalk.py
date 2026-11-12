@@ -247,7 +247,7 @@ def active_window_title():
 
 
 
-VERSION = "demo 8.4"   # пока проект в демо — пишем «demo», без «v»
+VERSION = "demo 8.5"   # пока проект в демо — пишем «demo», без «v»
 
 # ================== Журнал событий (для поиска багов) ==================
 LOG = deque(maxlen=500)                 # последние 500 событий
@@ -499,6 +499,26 @@ def clean_line(line):
     return re.sub(r"^\d{1,2}/\d{1,2} \d{1,2}:\d{2}:\d{2}\s+", "", line)   # «10/12 16:29:08 »
 
 
+def nick_key(text):
+    """Ник «для сравнения»: только буквы и цифры (любого языка), маленькими.
+    Сервер пишет ник в консоль не всегда так, как он записан в Steam: например, из
+    «fuckin'haze(алекс)» убирает апостроф → «fuckinhaze(алекс)». Знаки препинания не сравниваем."""
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def nick_matches(name, nick):
+    """name (из строки консоли) — это ник nick? Перед ником может стоять приписка сервера
+    («[VIP] ник»), но ник должен быть целым, а не концом чужого («xPlayerName» — не он)."""
+    want = nick_key(nick)
+    if not want:                                      # ник из одних значков — сравниваем как есть
+        return name.lower().endswith(nick.lower()) and (
+            len(name) == len(nick) or name[-len(nick) - 1] in " ]")
+    for i in range(len(name)):                        # «хвост» строки, начиная с i-го символа
+        if (i == 0 or name[i - 1] in " ]") and nick_key(name[i:]) == want:
+            return True
+    return False
+
+
 def parse_jump_line(line, nick):
     """«<ник> jumped 285.8273 units with a Long Jump» → ("LJ", 285.8273), если это прыжок ИМЕННО этого ника.
     Чужие прыжки и сообщения игроков в чате («Вася: <ник> jumped 400…») не подходят."""
@@ -508,10 +528,7 @@ def parse_jump_line(line, nick):
     name = m.group("name").strip()
     if ": " in name:                                  # «кто-то: текст» — это чат игрока, а не сервер
         return None
-    if not name.lower().endswith(nick.lower()):
-        return None
-    before = name[:len(name) - len(nick)]
-    if before and before[-1] not in " ]":             # ник целиком, а не кусок чужого («xPlayerName»)
+    if not nick_matches(name, nick):
         return None
     abbr = JUMP_BY_TEXT.get(m.group("type").lower().replace(" ", ""))
     if abbr is None:
@@ -3011,6 +3028,9 @@ COACH_TYPES = ("LJ", "BH", "MBH", "WJ", "LAJ")
 # ================== Журнал версий («что нового») ==================
 # Новые версии — СВЕРХУ. Пишем коротко и понятно для игрока, строчными, без технических слов.
 CHANGELOG = [
+    ("demo 8.5", ["рекорды и сессия снова видят прыжки, если в нике есть апостроф или другие значки "
+                  "(сервер убирает их из ника в консоли)"],
+                 ["records and session see your jumps again when the nick has an apostrophe or other symbols"]),
     ("demo 8.4", ["окно открывается сразу — из трея, с панели задач и после «свернуть» (было с задержкой до 0,8 с)"],
                  ["the window opens instantly — from the tray, the taskbar and after minimizing"]),
     ("demo 8.3", ["журнал версий — вот он",
