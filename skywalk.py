@@ -247,7 +247,7 @@ def active_window_title():
 
 
 
-VERSION = "demo 8.7"   # пока проект в демо — пишем «demo», без «v»
+VERSION = "demo 8.8"   # пока проект в демо — пишем «demo», без «v»
 
 # ================== Журнал событий (для поиска багов) ==================
 LOG = deque(maxlen=500)                 # последние 500 событий
@@ -1001,6 +1001,17 @@ state = {
     "cj": None, "cj_name": "",     # 66 без -w: присед + прыжок
     "jb": None, "jb_name": "",     # jumpbug: отпустить присед + прыжок в один тик
     "dv": None, "dv_name": "",     # danvari: прыжок + чекпоинт + телепорт в один тик
+    "isl": None, "isl_name": "",   # instastrafe влево: отпустить W + зажать A
+    "isr": None, "isr_name": "",   # instastrafe вправо: отпустить W + зажать D
+    "islc": None, "islc_name": "", # instastrafe влево + присед
+    "isrc": None, "isrc_name": "", # instastrafe вправо + присед
+    "tl": None, "tl_name": "",     # поворот влево: пока держишь — мышь едет влево (как +left)
+    "trn": None, "trn_name": "",   # поворот вправо (как +right)
+    "turn_speed": 900,             # скорость поворота, точек мыши в секунду
+    # --- panic: клавиша «всё выключить и спрятать окно» (None — не назначена) ---
+    "panic_vk": None, "panic_name": "",
+    "panic_down": False,
+    "panic_hit": False,            # panic только что нажали — окно спрячет главный цикл (tick)
     # клавиши ЧЕКПОИНТА и ТЕЛЕПОРТА в самой CS2 (на них должны быть cs_cp и cs_tp) — для danvari.
     # None — берём из настроек CS2, если там нашлись. Иначе (название, ("k", скан-код, расширенная)).
     "dv_cp": None, "dv_tp": None,
@@ -1046,9 +1057,16 @@ def release_w():
 #   cj  — «66 без -w»: +duck; +jump               (crouch jump: присед в воздухе даёт +9 к высоте → 57+9=66)
 #   jb  — jumpbug:     -duck; +jump в один тик    (держишь присед, у земли жмёшь бинд)
 #   dv  — danvari:     +jump; -jump; cs_cp; cs_tp (всё в один тик — сдвиг на лестнице)
-MACRO_BINDS = ("lj", "cj", "jb", "dv")
+#   isl / isr   — instastrafe: -forward; +moveleft (или +moveright) — пока держишь бинд
+#   islc / isrc — то же + присед
+#   tl / trn    — поворот: пока держишь, мышь едет влево / вправо с постоянной скоростью (как +left / +right)
+STRAFE_BINDS = {"isl": ("a", False), "isr": ("d", False), "islc": ("a", True), "isrc": ("d", True)}
+TURN_BINDS = {"tl": -1, "trn": 1}
+HOLD_BINDS = tuple(STRAFE_BINDS) + tuple(TURN_BINDS)      # работают, пока держишь — на колесо не ставятся
+MACRO_BINDS = ("lj", "cj", "jb", "dv") + HOLD_BINDS
 ALL_BINDS = ("unw",) + MACRO_BINDS
-WHEEL_OK = ALL_BINDS                    # на колесо можно всё: у 66-биндов присед держит сама программа
+WHEEL_OK = ("unw", "lj", "cj", "jb", "dv")   # на колесо: у 66-биндов присед держит сама программа
+TURN_MIN, TURN_MAX = 100, 4000          # пределы скорости поворота (точек мыши в секунду)
 # У колеса нет «отпускания» — только щелчок. Поэтому 66-бинд на колесе сам держит присед всё время
 # полёта: прыжок высотой 57 длится ≈0,75 с (t = 2·√(2h/g), g = 800), с приседом чуть дольше → 0,8 с.
 # Прыжок отпускаем почти сразу (через ~3 тика) — он нужен только в момент отрыва.
@@ -1113,7 +1131,11 @@ def bind_event(b, down):
             return
         state["macro_down"].discard(b)
     jump, duck = cs2_key("jump"), cs2_key("duck")
-    if b in ("lj", "cj"):
+    if b in STRAFE_BINDS:
+        strafe_bind(b, down)
+    elif b in TURN_BINDS:
+        turn_bind(b, down)
+    elif b in ("lj", "cj"):
         if down:
             if b == "lj":
                 release_w()                          # 66 с -w: W отпускается и не вернётся, пока не нажмёшь её заново
@@ -1134,6 +1156,73 @@ def bind_event(b, down):
             log("danvari: не назначены клавиши чекпоинта / телепорта (⚙ бинды → danvari: клавиши cs2)")
             return
         run_macro([(jump, False), (jump, True), (cp, False), (cp, True), (tp, False), (tp, True)])
+
+
+def strafe_bind(b, down):
+    """instastrafe: пока держишь бинд — W отпущена, а A (или D) зажата; с приседом — ещё и присед.
+    Противоположную клавишу (если её держат) на это время отпускаем — как в нуллах, «последняя нажатая»."""
+    side, crouch = STRAFE_BINDS[b]
+    opp = OPPOSITE[side]
+    key, opp_key, duck = ("k", SCAN[side], False), ("k", SCAN[opp], False), cs2_key("duck")
+    others = [x for x in STRAFE_BINDS if x != b and x in state["macro_down"]]   # другие instastrafe ещё держат
+    events = []
+    if down:
+        release_w()                                   # W не вернётся, пока не нажмёшь её заново
+        if state["phys"][opp] or any(STRAFE_BINDS[x][0] == opp for x in others):
+            events.append((opp_key, True))
+        events.append((key, False))
+        if crouch:
+            events.append((duck, False))
+    else:
+        if not state["held"][side] and not any(STRAFE_BINDS[x][0] == side for x in others):
+            events.append((key, True))                # саму клавишу человек не держит — отпускаем
+        if state["phys"][opp] or any(STRAFE_BINDS[x][0] == opp for x in others):
+            events.append((opp_key, False))           # противоположную всё ещё держат — возвращаем её
+        if crouch and not any(STRAFE_BINDS[x][1] for x in others):
+            events.append((duck, True))
+    run_macro(events)
+
+
+# --- повороты: отдельный поток двигает мышь, пока зажат бинд ---
+turn = {"dir": 0}                       # -1 влево, 1 вправо, 0 — стоим
+turn_wake = threading.Event()
+MOUSEEVENTF_MOVE = 0x0001
+
+
+def turn_bind(b, down):
+    held = [x for x in TURN_BINDS if x in state["macro_down"]]     # macro_down уже обновлён в bind_event
+    turn["dir"] = TURN_BINDS[b] if down else (TURN_BINDS[held[-1]] if held else 0)
+    if turn["dir"]:
+        turn_wake.set()
+
+
+def turn_worker():
+    """Двигает мышь по горизонтали ~1000 раз в секунду, пока turn["dir"] не ноль. Скорость — точек
+    в секунду; дробные остатки копим, чтобы скорость была ровной при любой частоте."""
+    acc, last = 0.0, time.perf_counter()
+    while True:
+        d = turn["dir"]
+        if not d:
+            turn_wake.wait()
+            turn_wake.clear()
+            acc, last = 0.0, time.perf_counter()
+            continue
+        time.sleep(0.001)
+        now = time.perf_counter()
+        acc += d * state["turn_speed"] * min(0.05, now - last)
+        last = now
+        px = int(acc)
+        if px and turn["dir"]:                # бинд могли отпустить, пока спали, — тогда не двигаем
+            acc -= px
+            try:
+                inp = INPUT(INPUT_MOUSE, _INPUT_UNION(mi=MOUSEINPUT(px, 0, 0, MOUSEEVENTF_MOVE, 0, 0)))
+                user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+            except Exception as e:
+                log(f"поворот: ошибка отправки {e!r}")
+                turn["dir"] = 0
+
+
+threading.Thread(target=turn_worker, daemon=True).start()
 
 
 def tap_bind(b):
@@ -1165,13 +1254,99 @@ def release_all():
         state["held"][k] = False
     for b in list(state["macro_down"]):  # выключили программу посреди бинда — отпускаем его клавиши
         bind_event(b, False)
+    turn["dir"] = 0
 
 
 def toggle():
+    if not state["enabled"] and faceit_blocked():      # при FACEIT Anti-Cheat включить нельзя
+        log("включение отменено: работает FACEIT Anti-Cheat")
+        return
     state["enabled"] = not state["enabled"]
     state["w_blocked"] = False
     release_all()
     play_click(state["enabled"])
+
+
+def turn_off():
+    """Выключить программу (если включена) и отпустить всё, что она держит."""
+    if state["enabled"]:
+        state["enabled"] = False
+        state["w_blocked"] = False
+        release_all()
+        play_click(False)
+
+
+def panic():
+    """Panic-клавиша: всё выключить сразу и спрятать окно (его прячет главный цикл — см. tick)."""
+    log("panic: выключаю всё")
+    turn_off()
+    state["capturing"] = None
+    state["panic_hit"] = True
+
+
+# --- FACEIT Anti-Cheat: с ним бинды не работают (он блокирует эмуляцию нажатий), а за макросы банят.
+# Поэтому, пока его служба запущена, программа сама выключается и не даёт себя включить.
+faceit = {"running": False}
+
+
+def faceit_blocked():
+    return faceit["running"] and prefs["faceit_off"]
+
+
+def faceit_running():
+    """Запущена ли служба FACEITService. В ответе «sc query» состояние идёт числом: 4 — работает
+    (число не зависит от языка Windows)."""
+    import subprocess
+    try:
+        out = subprocess.run(["sc", "query", "FACEITService"], capture_output=True, text=True, timeout=5,
+                             creationflags=0x08000000).stdout          # 0x08000000 — без окна консоли
+    except Exception:
+        return False
+    m = re.search(r"STATE\s*:\s*(\d+)", out) or re.search(r":\s*(\d+)\s+[A-Z_]+\s*$", out, re.M)
+    return bool(m and m.group(1) == "4")
+
+
+def faceit_watch():
+    """Отдельный поток: раз в 5 секунд проверяет службу FACEIT."""
+    while True:
+        was = faceit["running"]
+        faceit["running"] = faceit_running()
+        if faceit["running"] != was:
+            log(f"faceit anti-cheat: {'запущен' if faceit['running'] else 'остановлен'}")
+        if faceit_blocked():
+            turn_off()
+        time.sleep(5)
+
+
+# --- автозапуск с Windows: запись в реестре (HKCU\...\Run) — права администратора не нужны ---
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def autostart_command():
+    if getattr(sys, "frozen", False):                  # собранный .exe
+        return f'"{sys.executable}"'
+    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+
+def autostart_on():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+            return bool(winreg.QueryValueEx(k, "Skywalk")[0])
+    except Exception:
+        return False
+
+
+def set_autostart(on):
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            if on:
+                winreg.SetValueEx(k, "Skywalk", 0, winreg.REG_SZ, autostart_command())
+            else:
+                winreg.DeleteValue(k, "Skywalk")
+    except Exception as e:
+        log(f"автозапуск: {e!r}")
 
 
 def on_down(key):
@@ -1203,20 +1378,26 @@ def capture_key(data):
             state[target], state[target + "_name"] = None, ""
         elif target in ("dv_cp", "dv_tp"):
             state[target] = None                     # снова берём из настроек CS2
+        elif target == "panic":
+            state["panic_vk"], state["panic_name"] = None, ""
         return
     if vk in VK_TO_KEY:                              # W A S D назначать нельзя
         return
     bind = ("key", vk)
     used = {state[b] for b in ALL_BINDS if b != target and state[b]}
     if target in ("dv_cp", "dv_tp"):                 # клавиша ИЗ CS2 (cs_cp / cs_tp), её не перехватываем
-        if bind not in used and bind != state[target] and vk != state["toggle_vk"]:
+        if bind not in used and bind != state[target] and vk not in (state["toggle_vk"], state["panic_vk"]):
             state[target] = (key_name(data), ("k", data.scanCode, bool(data.flags & 0x01)))
         return
     if target == "toggle":
-        if bind not in used:
+        if bind not in used and vk != state["panic_vk"]:
             state["toggle_vk"], state["toggle_name"] = vk, key_name(data)
         return
-    if target in ALL_BINDS and vk != state["toggle_vk"] and bind not in used:   # одна клавиша — одно действие
+    if target == "panic":
+        if bind not in used and vk != state["toggle_vk"]:
+            state["panic_vk"], state["panic_name"] = vk, key_name(data)
+        return
+    if target in ALL_BINDS and vk not in (state["toggle_vk"], state["panic_vk"]) and bind not in used:   # одна клавиша — одно действие
         state[target], state[target + "_name"] = bind, key_name(data)
 
 
@@ -1268,6 +1449,12 @@ def _win_filter(msg, data):
         if msg in KEYDOWN and not state["toggle_down"]:
             toggle()
         state["toggle_down"] = msg in KEYDOWN
+        return True
+
+    if data.vkCode == state["panic_vk"]:           # panic: выключить всё (сама клавиша идёт дальше как обычно)
+        if msg in KEYDOWN and not state["panic_down"]:
+            panic()
+        state["panic_down"] = msg in KEYDOWN
         return True
 
     # --- бинды на клавиатуре ---
@@ -1497,6 +1684,19 @@ TR = {
         "reset_btn": "сбросить", "reset_sure": "точно?",
         "author": "автор", "version": "версия",
         "changes": "что нового", "changes_sub": "что менялось от версии к версии", "open": "открыть",
+        "bsub_jumps": "прыжки", "bsub_strafes": "стрейфы", "bsub_control": "управление",
+        "isl_name": "instastrafe влево", "isr_name": "instastrafe вправо",
+        "islc_name": "instastrafe влево + присед", "isrc_name": "instastrafe вправо + присед",
+        "is_sub": "держи: отпустить w + стрейф", "isc_sub": "держи: отпустить w + стрейф + присед",
+        "tl_name": "поворот влево", "trn_name": "поворот вправо", "turn_sub": "держи: мышь едет сама",
+        "turn_speed": "скорость поворота", "turn_speed_sub": "точек мыши в секунду",
+        "panic": "panic клавиша", "panic_sub": "всё выключить и спрятать окно",
+        "preset": "пресет", "preset_sub": "три набора биндов и нуллов",
+        "auto_on": "включать при открытии cs2", "auto_on_sub": "зашёл в игру — программа включилась",
+        "faceit_off": "выключать при faceit", "faceit_off_sub": "пока работает faceit anti-cheat",
+        "faceit_on": "faceit anti-cheat сейчас запущен", "faceit_hint": "faceit anti-cheat — выключено",
+        "own_color": "свой цвет", "own_color_sub": "#rrggbb и enter",
+        "autostart": "запускать с windows", "autostart_sub": "при входе в систему",
             },
     "en": {
         "tab_nulls": "nulls", "tab_binds": "binds",
@@ -1584,14 +1784,229 @@ TR = {
         "reset_btn": "reset", "reset_sure": "sure?",
         "author": "author", "version": "version",
         "changes": "what's new", "changes_sub": "what changed from version to version", "open": "open",
+        "bsub_jumps": "jumps", "bsub_strafes": "strafes", "bsub_control": "control",
+        "isl_name": "instastrafe left", "isr_name": "instastrafe right",
+        "islc_name": "instastrafe left + crouch", "isrc_name": "instastrafe right + crouch",
+        "is_sub": "hold: release w + strafe", "isc_sub": "hold: release w + strafe + duck",
+        "tl_name": "turn left", "trn_name": "turn right", "turn_sub": "hold: the mouse moves by itself",
+        "turn_speed": "turn speed", "turn_speed_sub": "mouse counts per second",
+        "panic": "panic key", "panic_sub": "turn everything off and hide the window",
+        "preset": "preset", "preset_sub": "three sets of binds and nulls",
+        "auto_on": "enable when cs2 opens", "auto_on_sub": "enter the game — the program turns on",
+        "faceit_off": "turn off with faceit", "faceit_off_sub": "while faceit anti-cheat is running",
+        "faceit_on": "faceit anti-cheat is running now", "faceit_hint": "faceit anti-cheat — turned off",
+        "own_color": "custom color", "own_color_sub": "#rrggbb and enter",
+        "autostart": "start with windows", "autostart_sub": "when you sign in",
+            },
+    "uk": {
+        "tab_nulls": "нули", "tab_binds": "бінди",
+        "fwd_back": "вперед / назад", "left_right": "вліво / вправо",
+        "only_cs2": "лише в cs2", "only_cs2_sub": "в інших вікнах клавіші звичайні",
+        "unw_sub": "відпустити вперед",
+        "toggle": "увімк / вимк", "toggle_sub": "увімкнути або вимкнути програму",
+        "bind_hint": "натисни кнопку, потім клавішу · esc — прибрати\n"
+                     "можна mouse 4/5 і колесо · 66 на колесі тримає присід 0,8 с",
+        "lj_name": "66 з -w", "lj_sub": "присід + стрибок + відпустити w",
+        "cj_name": "66 без -w", "cj_sub": "присід + стрибок",
+        "jb_sub": "тримай присід, біля землі тисни бінд", "dv_sub": "стрибок + cp + tp в один тік",
+        "dv_keys": "danvari: клавіші cs2", "dv_keys_sub": "на них у cs2 — cs_cp і cs_tp",
+        "cs2_found": "у cs2: стрибок {jump} · присід {duck}", "cs2_none": "налаштування cs2 не знайдено — тисну space і ctrl",
+        "log": "журнал", "log_sub": "якщо щось глючить — збережи і скинь", "save": "зберегти",
+        "sound": "звук", "click": "клацання", "click_sub": "звук при увімк / вимк",
+        "enter_cs2": "вхід у cs2", "enter_cs2_sub": "клацання, коли перемикаєшся в гру",
+        "volume": "гучність", "pitch": "тон", "style": "стиль",
+        "look": "вигляд", "language": "мова",
+        "assign": "призначити", "waiting": "чекаю ввід…", "hint": "{key} — увімк / вимк",
+        "мягкий": "м’який", "щелчок": "клац", "тик": "тік",
+        "set_sound": "звук", "set_ui": "інтерфейс", "set_about": "про програму",
+        "accent": "колір", "overlay": "оверлей", "overlay_sub": "статус поверх гри, лише в cs2",
+        "set_overlay": "оверлей", "position": "де на екрані",
+        "move": "перемістити", "done": "готово", "move_sub": "перетягни плашку мишкою куди зручно",
+        "moving_sub": "тягни плашку · подвійний клік по ній — готово",
+        "tray": "трей", "tray_sub": "при закритті ховати в трей",
+        "tray_open": "відкрити", "tray_toggle": "увімкнена", "tray_exit": "вихід",
+        "tray_hint": "skywalk працює в треї",
+        "tab_maps": "карти", "tab_records": "рекорди",
+        "rec_on": "стежу за консоллю cs2 · нік {nick}",
+        "rec_nonick": "не знайшов нік steam — увійди в steam і перезапусти програму",
+        "rec_off": "немає console.log: додай -condebug у параметри запуску cs2\n(steam → cs2 → властивості → параметри запуску)",
+        "rec_reset": "скинути рекорди", "rec_reset_sub": "видалити всі найкращі стрибки",
+        "rec_alltime": "рекорди", "rec_session": "сесія", "rec_progress": "прогрес", "rec_coach": "тренер",
+        "card_to_next": "до {t}", "card_top": "wrecker ✓",
+        "coach_last": "останній {abbr} · {dist}", "coach_record": "рекорд {abbr} · {dist}",
+        "coach_gap": "до {target}: {gap}", "coach_done": "ціль {target} ✓",
+        "coach_none": "у цій сесії ще немає {abbr}.\nстрибни — і я розберу стрибок по стрейфах",
+        "coach_summary": "сесія {abbr} ({n}): sync {sync}% · bad {bad}% · overlap {ovl}%\ndead air {dead}% · gain eff {eff}% · pre {pre}",
+        "coach_often": "найчастіше: {list}",
+        "prog_title": "найкращий {abbr} по днях", "prog_few": "графік з’явиться, коли набереться хоча б два дні стрибків",
+        "tip_where": " (найгірші стрейфи {n}: до {v}%)", "tip_where_n": " — стрейфи {n}",
+        "tip_w_late": "w відпущено на {t} тік. пізніше стрибка — швидкість втрачається на самому початку. відпускай w рівно в момент стрибка (або бінд «66 з -w»)",
+        "tip_pre_low": "pre {pre} — замало, для 280+ треба ~276: на престрейфі веди мишу плавно й широко, без ривків",
+        "tip_first_gain": "1-й стрейф дав {g} (решта ~{m}) — починай поворот мишею одразу з першою клавішею, без паузи після стрибка",
+        "tip_sync": "sync {s}%{where} — миша і клавіша розходяться: веди мишу, поки затиснута клавіша, і змінюй напрямок разом з a/d",
+        "tip_bad": "bad angles {b}%{where}: клавіша затиснута, а швидкість не росте — миша стоїть або ведеш її ривками",
+        "tip_overlap": "overlap {o}%{where}: a і d затиснуті разом — відпускай попередню клавішу раніше (або увімкни нули a/d)",
+        "tip_dead": "dead air{where}: між стрейфами нічого не затиснуто — тисни наступну клавішу одразу, як відпустив попередню",
+        "tip_mouse_slow": "мишу ведеш повільно (ang ratio {r}) — повертай швидше, gain недобирається",
+        "tip_mouse_fast": "мишу ведеш надто швидко (ang ratio {r}) — плавніше, ідеальний кут проскакує",
+        "tip_key_late": "клавішу тиснеш на {t} тіки (~{ms} мс) пізніше повороту миші — тисни a/d одночасно з початком повороту",
+        "tip_key_early": "клавішу тиснеш на {t} тіки (~{ms} мс) раніше повороту миші — спершу починай вести мишу",
+        "tip_release_early": "клавішу відпускаєш на {t} тіки раніше кінця повороту — тримай її до кінця стрейфу",
+        "tip_path": "траєкторія крива (airpath {a}, відхилення {d}) — роби стрейфи однаковими за шириною",
+        "tip_strafes_few": "лише {n} стрейфів — для 280+ зазвичай 9–11: роби стрейфи коротшими й частішими",
+        "tip_strafes_many": "{n} стрейфів — забагато коротких, роби їх довшими",
+        "tip_eff": "gain eff {e}% — веди мишу рівніше через увесь стрейф",
+        "tip_clean": "чистий стрибок — явних помилок немає, далі стабільність і повторення",
+        "tipname": "w_late:пізній w|pre_low:низький pre|first_gain:1-й стрейф|sync:sync|bad:bad angles|overlap:overlap|dead:dead air|mouse_slow:повільна миша|mouse_fast:швидка миша|key_late:пізня клавіша|key_early:рання клавіша|release_early:ранній відпуск|path:траєкторія|strafes_few:мало стрейфів|strafes_many:багато стрейфів|eff:gain eff",
+        "ses_status": "сесія з {since} · стрибків: {n}", "ses_empty": "у цій сесії ще немає стрибків",
+        "ses_new": "нова сесія", "ses_new_sub": "обнулити лік стрибків", "ses_new_btn": "почати",
+        "ses_title": "{abbr} · сесія", "ses_count": "стрибків", "ses_best": "найкращий", "ses_avg": "середній",
+        "rec_toast": "новий рекорд", "rec_toast_click": "клік — докладніше", "rec_first": "перший",
+        "rec_str": "стр", "rec_block": "блок {b}",
+        "months": "січ лют бер кві тра чер лип сер вер жов лис гру",
+        "watch_map": "карти", "watch_map_sub": "які чекати · до 6",
+        "regions": "регіони", "regions_sub": "пінг у мс · не вибрано — будь-який",
+        "regions_empty": "натисни «перевірити», щоб завантажити регіони",
+        "watch": "стеження", "watch_sub": "перевіряти кожні 45 с",
+        "steam_key": "steam api key", "steam_key_sub": "потрібен для списку серверів",
+        "check_now": "перевірити", "click_hint": "клік по рядку — підключитися",
+        "st_nokey": "встав steam api key: ⚙ → інтерфейс",
+        "st_badkey": "ключ steam не підходить", "st_net": "немає зв’язку зі steam",
+        "st_wait": "перевіряю…", "st_idle": "ще не перевіряли",
+        "st_ok": "{n} kz серверів · {ago} с тому",
+        "st_nomap": "додай карту зверху",
+        "elsewhere": "{map} · лише {where}",
+        "nowhere": "ніде немає: {maps}", "more": "… і ще {n}",
+        "ms": "мс",
+        "notify": "{map} з’явилася · #{num} [{region}] · {players}/{max} · {ping}",
+        "toast_title": "карта знайшлася", "toast_click": "клік — підключитися",
+        "reset": "скидання", "reset_sub": "повернути все за замовчуванням",
+        "reset_btn": "скинути", "reset_sure": "точно?",
+        "author": "автор", "version": "версія",
+        "changes": "що нового", "changes_sub": "що змінювалося від версії до версії", "open": "відкрити",
+        "bsub_jumps": "стрибки", "bsub_strafes": "стрейфи", "bsub_control": "керування",
+        "isl_name": "instastrafe вліво", "isr_name": "instastrafe вправо",
+        "islc_name": "instastrafe вліво + присід", "isrc_name": "instastrafe вправо + присід",
+        "is_sub": "тримай: відпустити w + стрейф", "isc_sub": "тримай: відпустити w + стрейф + присід",
+        "tl_name": "поворот вліво", "trn_name": "поворот вправо", "turn_sub": "тримай: миша їде сама",
+        "turn_speed": "швидкість повороту", "turn_speed_sub": "точок миші за секунду",
+        "panic": "panic клавіша", "panic_sub": "усе вимкнути і сховати вікно",
+        "preset": "пресет", "preset_sub": "три набори біндів і нулів",
+        "auto_on": "вмикати при відкритті cs2", "auto_on_sub": "зайшов у гру — програма увімкнулась",
+        "faceit_off": "вимикати при faceit", "faceit_off_sub": "поки працює faceit anti-cheat",
+        "faceit_on": "faceit anti-cheat зараз запущено", "faceit_hint": "faceit anti-cheat — вимкнено",
+        "own_color": "власний колір", "own_color_sub": "#rrggbb і enter",
+        "autostart": "запускати з windows", "autostart_sub": "при вході в систему",
+            },
+    "kk": {
+        "tab_nulls": "нулдар", "tab_binds": "биндтер",
+        "fwd_back": "алға / артқа", "left_right": "солға / оңға",
+        "only_cs2": "тек cs2-де", "only_cs2_sub": "басқа терезелерде пернелер әдеттегідей",
+        "unw_sub": "алға жүруді жіберу",
+        "toggle": "қосу / өшіру", "toggle_sub": "бағдарламаны қосу немесе өшіру",
+        "bind_hint": "батырманы бас, содан кейін пернені · esc — алып тастау\n"
+                     "mouse 4/5 пен дөңгелек те болады · дөңгелектегі 66 отыруды 0,8 с ұстайды",
+        "lj_name": "66 -w бар", "lj_sub": "отыру + секіру + w жіберу",
+        "cj_name": "66 -w жоқ", "cj_sub": "отыру + секіру",
+        "jb_sub": "отыруды ұста, жерге жақын биндті бас", "dv_sub": "секіру + cp + tp бір тикте",
+        "dv_keys": "danvari: cs2 пернелері", "dv_keys_sub": "cs2-де оларда — cs_cp және cs_tp",
+        "cs2_found": "cs2-де: секіру {jump} · отыру {duck}", "cs2_none": "cs2 баптаулары табылмады — space пен ctrl басамын",
+        "log": "журнал", "log_sub": "бірдеңе дұрыс істемесе — сақтап, жібер", "save": "сақтау",
+        "sound": "дыбыс", "click": "шерту", "click_sub": "қосу / өшіру кезіндегі дыбыс",
+        "enter_cs2": "cs2-ге кіру", "enter_cs2_sub": "ойынға ауысқанда шерту дыбысы",
+        "volume": "дыбыс деңгейі", "pitch": "тон", "style": "стиль",
+        "look": "көрініс", "language": "тіл",
+        "assign": "тағайындау", "waiting": "күтіп тұрмын…", "hint": "{key} — қосу / өшіру",
+        "мягкий": "жұмсақ", "щелчок": "шерту", "тик": "тик",
+        "set_sound": "дыбыс", "set_ui": "интерфейс", "set_about": "бағдарлама",
+        "accent": "түс", "overlay": "оверлей", "overlay_sub": "ойын үстіндегі күй, тек cs2-де",
+        "set_overlay": "оверлей", "position": "экрандағы орны",
+        "move": "жылжыту", "done": "дайын", "move_sub": "белгіні тінтуірмен ыңғайлы жерге сүйре",
+        "moving_sub": "белгіні сүйре · екі рет шерт — дайын",
+        "tray": "трей", "tray_sub": "жапқанда трейге жасыру",
+        "tray_open": "ашу", "tray_toggle": "қосулы", "tray_exit": "шығу",
+        "tray_hint": "skywalk трейде жұмыс істеп тұр",
+        "tab_maps": "карталар", "tab_records": "рекордтар",
+        "rec_on": "cs2 консолін бақылап тұрмын · ник {nick}",
+        "rec_nonick": "steam нигі табылмады — steam-ге кіріп, бағдарламаны қайта іске қос",
+        "rec_off": "console.log жоқ: cs2 іске қосу параметрлеріне -condebug қос\n(steam → cs2 → сипаттар → іске қосу параметрлері)",
+        "rec_reset": "рекордтарды тазалау", "rec_reset_sub": "барлық үздік секірулерді жою",
+        "rec_alltime": "рекордтар", "rec_session": "сессия", "rec_progress": "прогресс", "rec_coach": "жаттықтырушы",
+        "card_to_next": "{t} дейін", "card_top": "wrecker ✓",
+        "coach_last": "соңғы {abbr} · {dist}", "coach_record": "рекорд {abbr} · {dist}",
+        "coach_gap": "{target} дейін: {gap}", "coach_done": "мақсат {target} ✓",
+        "coach_none": "бұл сессияда әлі {abbr} жоқ.\nсекір — секіруді стрейфтер бойынша талдаймын",
+        "coach_summary": "сессия {abbr} ({n}): sync {sync}% · bad {bad}% · overlap {ovl}%\ndead air {dead}% · gain eff {eff}% · pre {pre}",
+        "coach_often": "ең жиі: {list}",
+        "prog_title": "күндер бойынша үздік {abbr}", "prog_few": "кемінде екі күн секірген соң график пайда болады",
+        "tip_where": " (ең нашар стрейфтер {n}: {v}% дейін)", "tip_where_n": " — стрейфтер {n}",
+        "tip_w_late": "w секіруден {t} тик кеш жіберілді — жылдамдық басында-ақ жоғалады. w-ны дәл секірген сәтте жібер (немесе «66 -w бар» бинді)",
+        "tip_pre_low": "pre {pre} — аздау, 280+ үшін ~276 керек: престрейфте тінтуірді жұлқымай, баяу әрі кең жүргіз",
+        "tip_first_gain": "1-стрейф {g} берді (қалғандары ~{m}) — бұрылуды секіргеннен кейін кідірмей, бірінші пернемен бірге баста",
+        "tip_sync": "sync {s}%{where} — тінтуір мен перне сәйкес емес: перне басулы тұрғанда тінтуірді жүргіз, бағытты a/d-мен бірге ауыстыр",
+        "tip_bad": "bad angles {b}%{where}: перне басулы, бірақ жылдамдық өспейді — тінтуір тұр немесе жұлқып жүргізесің",
+        "tip_overlap": "overlap {o}%{where}: a мен d бірге басулы — алдыңғы пернені ертерек жібер (немесе a/d нулдарын қос)",
+        "tip_dead": "dead air{where}: стрейфтер арасында ештеңе басылмаған — алдыңғысын жіберген бойда келесі пернені бас",
+        "tip_mouse_slow": "тінтуірді баяу жүргізесің (ang ratio {r}) — жылдамырақ бұр, gain толық жиналмайды",
+        "tip_mouse_fast": "тінтуірді тым жылдам жүргізесің (ang ratio {r}) — баяуырақ, мінсіз бұрыштан өтіп кетесің",
+        "tip_key_late": "пернені тінтуір бұрылысынан {t} тик (~{ms} мс) кеш басасың — a/d-ны бұрылыстың басымен бірге бас",
+        "tip_key_early": "пернені тінтуір бұрылысынан {t} тик (~{ms} мс) ерте басасың — алдымен тінтуірді жүргізе баста",
+        "tip_release_early": "пернені бұрылыс аяқталғанға дейін {t} тик ерте жібересің — стрейфтің соңына дейін ұста",
+        "tip_path": "траектория қисық (airpath {a}, ауытқу {d}) — стрейфтердің енін бірдей қыл",
+        "tip_strafes_few": "бар болғаны {n} стрейф — 280+ үшін әдетте 9–11: стрейфтерді қысқарақ әрі жиірек жаса",
+        "tip_strafes_many": "{n} стрейф — қысқалары тым көп, ұзағырақ жаса",
+        "tip_eff": "gain eff {e}% — тінтуірді бүкіл стрейф бойы бірқалыпты жүргіз",
+        "tip_clean": "таза секіру — айқын қате жоқ, енді тұрақтылық пен қайталау",
+        "tipname": "w_late:кеш w|pre_low:төмен pre|first_gain:1-стрейф|sync:sync|bad:bad angles|overlap:overlap|dead:dead air|mouse_slow:баяу тінтуір|mouse_fast:жылдам тінтуір|key_late:кеш перне|key_early:ерте перне|release_early:ерте жіберу|path:траектория|strafes_few:стрейф аз|strafes_many:стрейф көп|eff:gain eff",
+        "ses_status": "сессия {since} бастап · секіру: {n}", "ses_empty": "бұл сессияда әлі секіру жоқ",
+        "ses_new": "жаңа сессия", "ses_new_sub": "секіру санын нөлдеу", "ses_new_btn": "бастау",
+        "ses_title": "{abbr} · сессия", "ses_count": "секіру", "ses_best": "үздік", "ses_avg": "орташа",
+        "rec_toast": "жаңа рекорд", "rec_toast_click": "шерт — толығырақ", "rec_first": "бірінші",
+        "rec_str": "стр", "rec_block": "блок {b}",
+        "months": "қаң ақп нау сәу мам мау шіл там қыр қаз қар жел",
+        "watch_map": "карталар", "watch_map_sub": "қайсысын күту · 6-ға дейін",
+        "regions": "аймақтар", "regions_sub": "пинг мс · таңдалмаса — кез келген",
+        "regions_empty": "аймақтарды жүктеу үшін «тексеру» бас",
+        "watch": "бақылау", "watch_sub": "әр 45 с сайын тексеру",
+        "steam_key": "steam api key", "steam_key_sub": "серверлер тізімі үшін керек",
+        "check_now": "тексеру", "click_hint": "жолды шерт — қосылу",
+        "st_nokey": "steam api key енгіз: ⚙ → интерфейс",
+        "st_badkey": "steam кілті жарамайды", "st_net": "steam-мен байланыс жоқ",
+        "st_wait": "тексеріп жатырмын…", "st_idle": "әлі тексерілген жоқ",
+        "st_ok": "{n} kz сервер · {ago} с бұрын",
+        "st_nomap": "жоғарыдан карта қос",
+        "elsewhere": "{map} · тек {where}",
+        "nowhere": "еш жерде жоқ: {maps}", "more": "… және тағы {n}",
+        "ms": "мс",
+        "notify": "{map} пайда болды · #{num} [{region}] · {players}/{max} · {ping}",
+        "toast_title": "карта табылды", "toast_click": "шерт — қосылу",
+        "reset": "қалпына келтіру", "reset_sub": "бәрін әдепкі күйге қайтару",
+        "reset_btn": "тазалау", "reset_sure": "сенімдісің бе?",
+        "author": "автор", "version": "нұсқа",
+        "changes": "не жаңалық", "changes_sub": "нұсқадан нұсқаға не өзгерді", "open": "ашу",
+        "bsub_jumps": "секірулер", "bsub_strafes": "стрейфтер", "bsub_control": "басқару",
+        "isl_name": "instastrafe солға", "isr_name": "instastrafe оңға",
+        "islc_name": "instastrafe солға + отыру", "isrc_name": "instastrafe оңға + отыру",
+        "is_sub": "ұста: w жіберу + стрейф", "isc_sub": "ұста: w жіберу + стрейф + отыру",
+        "tl_name": "солға бұрылу", "trn_name": "оңға бұрылу", "turn_sub": "ұста: тінтуір өзі жүреді",
+        "turn_speed": "бұрылу жылдамдығы", "turn_speed_sub": "секундына тінтуір нүктесі",
+        "panic": "panic пернесі", "panic_sub": "бәрін өшіріп, терезені жасыру",
+        "preset": "пресет", "preset_sub": "биндтер мен нулдардың үш жинағы",
+        "auto_on": "cs2 ашылғанда қосу", "auto_on_sub": "ойынға кірдің — бағдарлама қосылды",
+        "faceit_off": "faceit кезінде өшіру", "faceit_off_sub": "faceit anti-cheat жұмыс істеп тұрғанда",
+        "faceit_on": "faceit anti-cheat қазір іске қосулы", "faceit_hint": "faceit anti-cheat — өшірулі",
+        "own_color": "өз түсің", "own_color_sub": "#rrggbb және enter",
+        "autostart": "windows-пен бірге іске қосу", "autostart_sub": "жүйеге кіргенде",
             },
 }
-LANG_LABELS = {"ru": "рус", "en": "eng"}
+LANG_LABELS = {"ru": "рус", "en": "eng", "uk": "укр", "kk": "қаз"}
 
 
 def tr(name, **kw):
     """Текст на текущем языке."""
-    text = TR[LANG].get(name, name)
+    text = TR[LANG].get(name)
+    if text is None:                          # в этом языке строки нет — берём английскую
+        text = TR["en"].get(name, name)
     return text.format(**kw) if kw else text
 
 
@@ -1610,6 +2025,10 @@ RECORDS_PATH = os.path.join(APPDATA, "Skywalk", "records.json")
 DEFAULT_PREFS = {"accent": "blue", "overlay": False, "overlay_pos": "mr",  # позиция: см. SCREEN_POS
                  "overlay_xy": None,         # своё место оверлея [x, y] в долях экрана (0..1), None — по умолчанию
                  "tray": True,
+                 "accent_hex": "",           # свой цвет «#rrggbb» (когда accent = "custom")
+                 "auto_on": False,           # включать программу, когда открывается окно CS2
+                 "faceit_off": True,         # выключаться, пока работает FACEIT Anti-Cheat
+                 "preset": "1", "presets": {},   # пресеты биндов: какой сейчас и что лежит в остальных
                  # слежка за картами на серверах Cybershoke
                  "steam_key": "", "watch_maps": [], "watch_regions": [], "watch_on": False,
                  "known_maps": [],           # все известные карты: с серверов + из базы CS2KZ
@@ -1638,7 +2057,8 @@ def reset_settings():
     sound.clear()
     sound.update(DEFAULT_SOUND)
     state["pairs"].update(DEFAULT_PAIRS)
-    state.update(only_cs2=True, toggle_vk=VK_F8, toggle_name="F8", dv_cp=None, dv_tp=None)
+    state.update(only_cs2=True, toggle_vk=VK_F8, toggle_name="F8", dv_cp=None, dv_tp=None,
+                 panic_vk=None, panic_name="", turn_speed=900)
     for b in ALL_BINDS:
         state[b], state[b + "_name"] = None, ""
     key = prefs.get("steam_key", "")        # ключ Steam при сбросе оставляем — его неудобно вводить заново
@@ -1658,14 +2078,70 @@ def snapshot():
     return {
         "lang": LANG,
         "sound": dict(sound),
+        "toggle_vk": state["toggle_vk"], "toggle_name": state["toggle_name"],
+        "panic_vk": state["panic_vk"], "panic_name": state["panic_name"],
+        **binds_snapshot(),
+        "prefs": dict(prefs),
+    }
+
+
+def binds_snapshot():
+    """То, что входит в пресет: нуллы, «только в cs2», все бинды, клавиши danvari, скорость поворота."""
+    return {
         "pairs": dict(state["pairs"]),
         "only_cs2": state["only_cs2"],
-        "toggle_vk": state["toggle_vk"], "toggle_name": state["toggle_name"],
+        "turn_speed": state["turn_speed"],
         **{b: list(state[b]) if state[b] else None for b in ALL_BINDS},
         **{b + "_name": state[b + "_name"] for b in ALL_BINDS},
         **{k: [state[k][0], state[k][1][1], state[k][1][2]] if state[k] else None for k in ("dv_cp", "dv_tp")},
-        "prefs": dict(prefs),
     }
+
+
+def apply_binds(data, clear=False):
+    """Применить бинды из словаря (файл настроек или пресет). Странное и битое пропускаем.
+    clear=True — сначала всё сбросить (пресет заменяет бинды целиком, а не дополняет)."""
+    if clear:
+        state["pairs"].update(DEFAULT_PAIRS)
+        state.update(only_cs2=True, dv_cp=None, dv_tp=None, turn_speed=900)
+        for b in ALL_BINDS:
+            state[b], state[b + "_name"] = None, ""
+    for pair in ("ad", "ws"):
+        if isinstance(data.get("pairs"), dict) and isinstance(data["pairs"].get(pair), bool):
+            state["pairs"][pair] = data["pairs"][pair]
+    if isinstance(data.get("only_cs2"), bool):
+        state["only_cs2"] = data["only_cs2"]
+    if isinstance(data.get("turn_speed"), int):
+        state["turn_speed"] = max(TURN_MIN, min(TURN_MAX, data["turn_speed"]))
+    used = set()
+    taken = {("key", state["toggle_vk"]), ("key", state["panic_vk"])}
+    for b in ALL_BINDS:                       # колесо — только там, где можно; одна клавиша — один бинд
+        v = data.get(b)
+        kinds = ("key", "wheel", "mouse") if b in WHEEL_OK else ("key", "mouse")
+        ok = isinstance(v, list) and len(v) == 2 and v[0] in kinds and (
+            isinstance(v[1], int) if v[0] == "key" else tuple(v) in MOUSE_LABELS)   # мышь/колесо — только известные
+        if ok and tuple(v) not in used and tuple(v) not in taken:
+            state[b], state[b + "_name"] = tuple(v), str(data.get(b + "_name", ""))
+            used.add(tuple(v))
+    for k in ("dv_cp", "dv_tp"):
+        v = data.get(k)
+        if isinstance(v, list) and len(v) == 3 and isinstance(v[1], int) and 0 < v[1] < 0x80:
+            state[k] = (str(v[0]), ("k", v[1], bool(v[2])))
+
+
+PRESETS = ("1", "2", "3")
+
+
+def switch_preset(name):
+    """Перейти на другой пресет: текущие бинды кладём в свой пресет, из нового — достаём.
+    Пустой пресет начинается с тех же биндов (их удобнее поправить, чем назначать с нуля)."""
+    if name not in PRESETS or name == prefs["preset"]:
+        return
+    release_all()
+    prefs["presets"] = dict(prefs["presets"], **{prefs["preset"]: binds_snapshot()})   # новый словарь — чтобы
+    saved = prefs["presets"].get(name)                                                 # сохранение заметило
+    if isinstance(saved, dict):
+        apply_binds(saved, clear=True)
+    prefs["preset"] = name
 
 
 CRASH_PATH = os.path.join(APPDATA, "Skywalk", "crash.txt")
@@ -1766,20 +2242,27 @@ def load_settings():
             sound[key] = max(lo, min(hi, snd[key]))
     if snd.get("style") in STYLES:
         sound["style"] = snd["style"]
-    for pair in ("ad", "ws"):
-        if isinstance(data.get("pairs", {}).get(pair), bool):
-            state["pairs"][pair] = data["pairs"][pair]
-    if isinstance(data.get("only_cs2"), bool):
-        state["only_cs2"] = data["only_cs2"]
     if isinstance(data.get("toggle_vk"), int) and data.get("toggle_name"):
         state["toggle_vk"], state["toggle_name"] = data["toggle_vk"], str(data["toggle_name"])
+    if isinstance(data.get("panic_vk"), int) and data.get("panic_name") and data["panic_vk"] != state["toggle_vk"]:
+        state["panic_vk"], state["panic_name"] = data["panic_vk"], str(data["panic_name"])
     p = data.get("prefs", {})
     if not isinstance(p, dict):
         p = {}
     p = merge_records(p)                     # рекорды из records.json (если settings.json их «потерял»)
+    if isinstance(p.get("accent_hex"), str) and HEX_RE.match(p["accent_hex"]):
+        prefs["accent_hex"] = p["accent_hex"].lower()
+        ACCENTS["custom"] = make_accent(prefs["accent_hex"])
     if p.get("accent") in ACCENTS:
         prefs["accent"] = p["accent"]
         set_accent(p["accent"])
+    for key in ("auto_on", "faceit_off"):
+        if isinstance(p.get(key), bool):
+            prefs[key] = p[key]
+    if isinstance(p.get("presets"), dict):
+        prefs["presets"] = {k: v for k, v in p["presets"].items() if k in PRESETS and isinstance(v, dict)}
+    if p.get("preset") in PRESETS:
+        prefs["preset"] = p["preset"]
     if isinstance(p.get("steam_key"), str):
         prefs["steam_key"] = p["steam_key"][:100]
     if isinstance(p.get("watch_maps"), list):
@@ -1827,20 +2310,7 @@ def load_settings():
         prefs["overlay_xy"] = [float(xy[0]), float(xy[1])]
     if p.get("overlay_pos") in SCREEN_POS:
         prefs["overlay_pos"] = p["overlay_pos"]
-    used = set()
-    for b in ALL_BINDS:                       # колесо — только там, где можно; одна клавиша — один бинд
-        v = data.get(b)
-        kinds = ("key", "wheel", "mouse") if b in WHEEL_OK else ("key", "mouse")
-        ok = isinstance(v, list) and len(v) == 2 and v[0] in kinds and (
-            isinstance(v[1], int) if v[0] == "key" else tuple(v) in MOUSE_LABELS)   # мышь/колесо — только известные
-        if ok and tuple(v) not in used:
-            state[b], state[b + "_name"] = tuple(v), str(data.get(b + "_name", ""))
-            used.add(tuple(v))
-    for k in ("dv_cp", "dv_tp"):
-        v = data.get(k)
-        if isinstance(v, list) and len(v) == 3 and isinstance(v[1], int) and 0 < v[1] < 0x80:
-            state[k] = (str(v[0]), ("k", v[1], bool(v[2])))
-
+    apply_binds(data)
 
 
 # ================== Цвета ==================
@@ -1867,6 +2337,19 @@ ACCENTS = {
     "pink":   dict(ACCENT="#ff5fb0", ACCENT_DIM="#7a1f50", GLOW="#ec4899",
                    SHIM=("#ec4899", "#ff5fb0", "#ffc9e5")),
 }
+
+
+HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def make_accent(color):
+    """Свой цвет «#rrggbb» → полный набор, как у готовых: тёмный вариант, свечение и переливание."""
+    def blend(to, t):
+        a, b = [int(color[i:i + 2], 16) for i in (1, 3, 5)], [int(to[i:i + 2], 16) for i in (1, 3, 5)]
+        return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
+    glow = blend("#000000", 0.15)
+    return dict(ACCENT=color.lower(), ACCENT_DIM=blend("#000000", 0.6), GLOW=glow,
+                SHIM=(glow, color.lower(), blend("#ffffff", 0.6)))
 
 
 def set_accent(name):
@@ -3094,6 +3577,20 @@ COACH_TYPES = ("LJ", "BH", "MBH", "WJ", "LAJ")
 # ================== Журнал версий («что нового») ==================
 # Новые версии — СВЕРХУ. Пишем коротко и понятно для игрока, строчными, без технических слов.
 CHANGELOG = [
+    ("demo 8.8", ["новые бинды: instastrafe влево / вправо (и с приседом), повороты мышью со своей скоростью",
+                  "бинды разложены по подвкладкам: прыжки, стрейфы, управление",
+                  "panic клавиша — всё выключить и спрятать окно",
+                  "три пресета биндов и нуллов",
+                  "программа сама выключается, пока работает faceit anti-cheat",
+                  "можно включать программу при открытии cs2 и запускать её вместе с windows",
+                  "свой цвет интерфейса (#rrggbb), украинский и казахский языки"],
+                 ["new binds: instastrafe left / right (also with crouch), mouse turns with your own speed",
+                  "binds are split into sub-tabs: jumps, strafes, control",
+                  "panic key — turn everything off and hide the window",
+                  "three presets of binds and nulls",
+                  "the program turns itself off while faceit anti-cheat is running",
+                  "it can turn on when cs2 opens and start together with windows",
+                  "custom interface color (#rrggbb), ukrainian and kazakh languages"]),
     ("demo 8.7", ["31 новая карта cybershoke с тирами (подсказки и тир в слежке), у 5 карт обновлён тир"],
                  ["31 new cybershoke maps with tiers (suggestions and tier in map watch), 5 tiers updated"]),
     ("demo 8.6", ["рекорды хранятся ещё и в отдельном файле — их не сотрёт даже старая версия программы"],
@@ -3621,6 +4118,7 @@ class App(ctk.CTk):
         self.preview_until = 0.0              # до какого момента показывать оверлей для примера
         self.overlay_edit = False             # режим «переместить оверлей» включён
         self.sub = "sound"                    # открытая подвкладка настроек
+        self.bsub = "jumps"                   # открытая подвкладка биндов
         self.reset_armed = False              # «сбросить» нажали один раз — ждём подтверждения
         self.overlay = None
         self.next_records = 0.0               # когда снова дочитать консоль CS2 (рекорды)
@@ -3667,7 +4165,7 @@ class App(ctk.CTk):
         mini.place(relx=1.0, x=-46, y=8, anchor="ne")
 
         # --- вкладки: гладкий переключатель, выделение переезжает ---
-        self.tabs = Segmented(self, self.TABS, "nulls", self.show_tab, seg_w=96, h=38,
+        self.tabs = Segmented(self, self.TABS, tab if tab in self.TABS else "nulls", self.show_tab, seg_w=96, h=38,
                               labels=[tr("tab_" + n) for n in self.TABS], font_size=13)
         self.tabs.pack(pady=(0, 14))
 
@@ -3722,12 +4220,12 @@ class App(ctk.CTk):
         import traceback
         write_crash("".join(traceback.format_exception(exc, val, tb)))
 
-    def rebuild(self):
-        """Смена языка: убираем всё и собираем заново с новыми надписями."""
+    def rebuild(self, tab=None):
+        """Смена языка, цвета или пресета: убираем всё и собираем заново с новыми надписями."""
         for w in self.winfo_children():
             if not isinstance(w, (Floating, MapToast)):   # оверлей и уведомление оставляем
                 w.destroy()
-        self.build(tab=self.SETTINGS)
+        self.build(tab=tab or self.SETTINGS)
 
     # ---------- вкладка «нуллы» ----------
     def build_nulls(self, page):
@@ -3752,11 +4250,21 @@ class App(ctk.CTk):
                   lambda v: state.__setitem__("only_cs2", v == "on")).pack()
 
     # ---------- вкладка «бинды» ----------
+    BIND_SUBS = ("jumps", "strafes", "control")
+
     def build_binds(self, page):
         self.bind_btns = []                   # (кнопка, что назначаем) — текст и цвет обновляет tick
+        subs = self.BIND_SUBS
+        Segmented(page, subs, self.bsub, self.show_bsub, seg_w=126, h=32,
+                  labels=[tr("bsub_" + x) for x in subs]).pack(pady=(0, 8))
+        holder = ctk.CTkFrame(page, fg_color="transparent")
+        holder.pack(fill="both", expand=True)
+        self.bholder = holder
+        self.bpages = {x: ctk.CTkFrame(holder, fg_color="transparent") for x in subs}
+        jumps, strafes, control = (self.bpages[x] for x in subs)
 
-        def row(title, sub, target, reset):
-            right = pill(page, title, sub, height=46)
+        def row(parent, title, sub, target, reset):
+            right = pill(parent, title, sub, height=46)
             reset_btn(right, reset).pack(side="right", padx=(4, 0))
             btn = keycap(right, command=lambda: self.start_capture(target))
             btn.pack(side="right")
@@ -3765,36 +4273,92 @@ class App(ctk.CTk):
         def clear(b):
             return lambda: state.update({b: None, b + "_name": ""})
 
-        row("-w", tr("unw_sub"), "unw", clear("unw"))
-        row(tr("lj_name"), tr("lj_sub"), "lj", clear("lj"))
-        row(tr("cj_name"), tr("cj_sub"), "cj", clear("cj"))
-        row("jumpbug", tr("jb_sub"), "jb", clear("jb"))
-        row("danvari", tr("dv_sub"), "dv", clear("dv"))
+        # --- прыжки ---
+        row(jumps, "-w", tr("unw_sub"), "unw", clear("unw"))
+        row(jumps, tr("lj_name"), tr("lj_sub"), "lj", clear("lj"))
+        row(jumps, tr("cj_name"), tr("cj_sub"), "cj", clear("cj"))
+        row(jumps, "jumpbug", tr("jb_sub"), "jb", clear("jb"))
+        row(jumps, "danvari", tr("dv_sub"), "dv", clear("dv"))
 
         # клавиши чекпоинта и телепорта в самой CS2 — их danvari жмёт вместе с прыжком
-        right = pill(page, tr("dv_keys"), tr("dv_keys_sub"), height=46)
+        right = pill(jumps, tr("dv_keys"), tr("dv_keys_sub"), height=46)
         reset_btn(right, lambda: state.update(dv_cp=None, dv_tp=None)).pack(side="right", padx=(4, 0))
         for which in ("tp", "cp"):
             btn = keycap(right, command=lambda w=which: self.start_capture("dv_" + w), width=62)
             btn.pack(side="right", padx=(4, 0))
             self.bind_btns.append((btn, "dv_" + which))
 
-        right = pill(page, tr("toggle"), tr("toggle_sub"), height=46)
+        ctk.CTkLabel(jumps, text=tr("bind_hint"),
+                     text_color=MUTED, font=font(10), justify="center").pack(pady=(6, 0))
+        self.cs2_label = ctk.CTkLabel(jumps, text="", text_color=MUTED, font=font(10), height=14)
+        self.cs2_label.pack()
+
+        # --- стрейфы и повороты: работают, пока держишь клавишу ---
+        row(strafes, tr("isl_name"), tr("is_sub"), "isl", clear("isl"))
+        row(strafes, tr("isr_name"), tr("is_sub"), "isr", clear("isr"))
+        row(strafes, tr("islc_name"), tr("isc_sub"), "islc", clear("islc"))
+        row(strafes, tr("isrc_name"), tr("isc_sub"), "isrc", clear("isrc"))
+        row(strafes, tr("tl_name"), tr("turn_sub"), "tl", clear("tl"))
+        row(strafes, tr("trn_name"), tr("turn_sub"), "trn", clear("trn"))
+        right = pill(strafes, tr("turn_speed"), tr("turn_speed_sub"), height=46)
+        val = ctk.CTkLabel(right, text=str(state["turn_speed"]), text_color=MUTED, width=42, font=font(12))
+        val.pack(side="right")
+
+        def speed_changed(v):
+            state["turn_speed"] = int(round(v / 50) * 50)
+            val.configure(text=str(state["turn_speed"]))
+
+        sl = ctk.CTkSlider(right, from_=TURN_MIN, to=TURN_MAX, number_of_steps=(TURN_MAX - TURN_MIN) // 50,
+                           width=130, height=14, command=speed_changed, progress_color=ACCENT_DIM,
+                           fg_color=KEYCAP, button_color="#e0e0e4", button_hover_color="#ffffff")
+        sl.set(state["turn_speed"])
+        sl.pack(side="right", padx=8)
+
+        # --- управление ---
+        right = pill(control, tr("toggle"), tr("toggle_sub"), height=46)
         reset_btn(right, lambda: state.update(toggle_vk=VK_F8, toggle_name="F8")
                   ).pack(side="right", padx=(4, 0))
         btn = keycap(right, command=lambda: self.start_capture("toggle"))
         btn.pack(side="right")
         self.bind_btns.append((btn, "toggle"))
 
-        ctk.CTkLabel(page, text=tr("bind_hint"),
-                     text_color=MUTED, font=font(10), justify="center").pack(pady=(6, 0))
-        self.cs2_label = ctk.CTkLabel(page, text="", text_color=MUTED, font=font(10), height=14)
-        self.cs2_label.pack()
+        right = pill(control, tr("panic"), tr("panic_sub"), height=46)
+        reset_btn(right, lambda: state.update(panic_vk=None, panic_name="")).pack(side="right", padx=(4, 0))
+        btn = keycap(right, command=lambda: self.start_capture("panic"))
+        btn.pack(side="right")
+        self.bind_btns.append((btn, "panic"))
+
+        right = pill(control, tr("preset"), tr("preset_sub"), height=46)
+        Segmented(right, PRESETS, prefs["preset"], self.on_preset, seg_w=46).pack()
+
+        right = pill(control, tr("auto_on"), tr("auto_on_sub"), height=46)
+        Segmented(right, ("off", "on"), "on" if prefs["auto_on"] else "off",
+                  lambda v: prefs.__setitem__("auto_on", v == "on")).pack()
+
+        right = pill(control, tr("faceit_off"), tr("faceit_off_sub"), height=46)
+        Segmented(right, ("off", "on"), "on" if prefs["faceit_off"] else "off",
+                  lambda v: prefs.__setitem__("faceit_off", v == "on")).pack()
+        self.faceit_label = ctk.CTkLabel(control, text="", text_color=MUTED, font=font(10), height=14)
+        self.faceit_label.pack(pady=(6, 0))
+
+        self.stack_show(self.bpages[self.bsub])
+
+    def show_bsub(self, name):
+        old = self.bsub
+        self.bsub = name
+        state["capturing"] = None             # ушли со страницы — не ждём клавишу для бинда, которого не видно
+        self.switch_page(self.bholder, self.bpages[name], "bsub:" + name, animate=old != name)
+
+    def on_preset(self, name):
+        switch_preset(name)
+        self.after(220, lambda: self.rebuild("binds"))   # переключатель доедет — и покажем бинды пресета
 
     def bind_text(self, target):
         """Что написать на кнопке бинда."""
         if target == "toggle":
             return state["toggle_name"]
+        if target == "panic":
+            return state["panic_name"] or tr("assign")
         if target in ("dv_cp", "dv_tp"):
             name = dv_key_name(target[3:])
             return f"{target[3:]} · {name.lower()}" if name else f"{target[3:]} · —"
@@ -3900,6 +4464,8 @@ class App(ctk.CTk):
     def page_key(self):
         """Под каким именем запомнен снимок того, что сейчас открыто в главной области окна.
         У «рекордов» свой снимок на каждый вид (и на каждый тип прыжка в тренере/прогрессе)."""
+        if self.tab == "binds":
+            return "binds:" + self.bsub
         if self.tab != "records":
             return self.tab
         key = "records:" + self.rec_view
@@ -4623,7 +5189,7 @@ class App(ctk.CTk):
 
     def build_ui(self, page):
         right = pill(page, tr("language"), height=46)
-        Segmented(right, tuple(TR), LANG, self.on_lang, seg_w=54,
+        Segmented(right, tuple(TR), LANG, self.on_lang, seg_w=50,
                   labels=[LANG_LABELS[l] for l in TR]).pack()
 
         right = pill(page, tr("accent"), height=46)                 # кружки с цветами
@@ -4634,6 +5200,14 @@ class App(ctk.CTk):
                           fg_color=color, hover_color=mix(color, "#ffffff", 0.25),
                           border_width=2 if chosen else 0, border_color=TEXT,
                           command=lambda n=name: self.on_accent(n)).pack(side="right", padx=3)
+
+        right = pill(page, tr("own_color"), tr("own_color_sub"), height=46)   # свой цвет: #rrggbb + Enter
+        color_entry = ctk.CTkEntry(right, width=110, height=30, corner_radius=15, fg_color=KEYCAP,
+                                   border_color=KEYCAP, text_color=TEXT, font=font(12),
+                                   placeholder_text="#4f7cff")
+        color_entry.insert(0, prefs["accent_hex"])
+        color_entry.bind("<Return>", lambda e: self.on_own_color(color_entry.get()))
+        color_entry.pack(side="right")
 
         right = pill(page, tr("steam_key"), tr("steam_key_sub"), height=46)
         keycap(right, "?", lambda: webbrowser.open(KEY_PAGE), width=32).pack(side="right", padx=(6, 0))
@@ -4646,6 +5220,10 @@ class App(ctk.CTk):
         right = pill(page, tr("tray"), tr("tray_sub"), height=46)
         Segmented(right, ("off", "on"), "on" if prefs["tray"] else "off",
                   lambda v: prefs.__setitem__("tray", v == "on")).pack()
+
+        right = pill(page, tr("autostart"), tr("autostart_sub"), height=46)
+        Segmented(right, ("off", "on"), "on" if autostart_on() else "off",
+                  lambda v: set_autostart(v == "on")).pack()
 
         right = pill(page, tr("reset"), tr("reset_sub"), height=46)
         self.reset_btn = keycap(right, tr("reset_btn"), self.on_reset, width=100)
@@ -4742,6 +5320,17 @@ class App(ctk.CTk):
         set_accent(name)
         self.after(30, self.rebuild)          # перерисовываем всё новым цветом
 
+    def on_own_color(self, text):
+        """Свой цвет акцента: «#rrggbb» (решётку можно не писать). Неправильный ввод просто не применяем."""
+        text = text.strip().lower()
+        if not text.startswith("#"):
+            text = "#" + text
+        if not HEX_RE.match(text):
+            return
+        prefs["accent_hex"] = text
+        ACCENTS["custom"] = make_accent(text)
+        self.on_accent("custom")
+
     def on_reset(self):
         if not self.reset_armed:              # первое нажатие — просим подтвердить
             self.reset_armed = True
@@ -4810,7 +5399,8 @@ class App(ctk.CTk):
         Раньше все страницы лежали стопкой и просто перекрывали друг друга. Но Tk считает их все
         видимыми и при каждом показе окна (из трея, после «свернуть») перерисовывал ВСЕ — 0,5 с
         ожидания. Теперь «живая» только открытая страница: показ окна ~0,07 с."""
-        group = self.pages if page in self.pages.values() else self.subpages
+        group = next(g for g in (self.pages, getattr(self, "bpages", {}), getattr(self, "subpages", {}))
+                     if page in g.values())
         page.place(relx=0, rely=0, relwidth=1, relheight=1)
         page.lift()
         for other in group.values():
@@ -4872,7 +5462,12 @@ class App(ctk.CTk):
 
     def remember(self, container, key):
         """Запоминаем, как выглядит страница, — для следующего перехода на неё."""
-        current = self.page_key() if not key.startswith("sub:") else "sub:" + self.sub
+        if key.startswith("sub:"):
+            current = "sub:" + self.sub
+        elif key.startswith("bsub:"):
+            current = "bsub:" + self.bsub
+        else:
+            current = self.page_key()
         if key == current and self.fade is None and self.is_front():
             img = grab_widget(container)
             if img is not None:
@@ -4931,6 +5526,13 @@ class App(ctk.CTk):
         if not self.winfo_exists():
             return
         update_mouse_hook()                   # мышь перехватываем только когда она нужна для -w
+        if state["panic_hit"]:                # нажали panic: программа уже выключена — прячем окно
+            state["panic_hit"] = False
+            if self.state() == "normal":
+                if prefs["tray"] and self.tray is not None:
+                    self.withdraw()
+                else:
+                    self.minimize()
         # окно тащат: ничего не перерисовываем, иначе Windows закрашивает элементы чёрным.
         # Как только левая кнопка мыши отпущена — продолжаем как обычно.
         if self.dragging:
@@ -4969,6 +5571,8 @@ class App(ctk.CTk):
                 play_click(True, force=True)
             if self.cs2_active and not was:
                 refresh_cs2_binds()
+                if prefs["auto_on"] and not state["enabled"] and not faceit_blocked():
+                    toggle()                  # открыли CS2 — включаемся сами
         if self.overlay is not None:
             # «дыхание» точки округляем до 20 ступенек: так готовых картинок плашки всего
             # пара десятков, они берутся из запаса и не рисуются заново каждый кадр
@@ -5000,7 +5604,11 @@ class App(ctk.CTk):
             self._set(self.status, "st", text="off")
             tw.to(self.status, "text_color", MUTED)
             self.dot.configure(text_color=MUTED)
-        self._set(self.hint, "hint", text=tr("hint", key=state["toggle_name"].lower()))
+        blocked = faceit_blocked()
+        self._set(self.hint, "hint", text=tr("faceit_hint") if blocked
+                  else tr("hint", key=state["toggle_name"].lower()))
+        if self.tab == "binds" and self.bsub == "control":
+            self._set(self.faceit_label, "faceit", text=tr("faceit_on") if faceit["running"] else "")
 
         for btn, target_name in self.bind_btns:
             text = self.bind_text(target_name)
@@ -5029,7 +5637,7 @@ class App(ctk.CTk):
             if self.tab == "records" and (not record_watcher.behind or now >= self.next_rec_ui):
                 self.next_rec_ui = now + 0.5
                 self.show_records()
-        if self.tab == "binds":                   # какие клавиши CS2 программа будет жать
+        if self.tab == "binds" and self.bsub == "jumps":   # какие клавиши CS2 программа будет жать
             if cs2_binds["files"][1]:
                 status = tr("cs2_found", jump=", ".join(cs2_binds["jump"]).lower(),
                             duck=", ".join(cs2_binds["duck"]).lower())
@@ -5069,6 +5677,8 @@ class App(ctk.CTk):
                 self.remember(self.subholder, "sub:" + self.sub)
                 self.remember(self.holder, self.SETTINGS)
             else:
+                if self.tab == "binds":
+                    self.remember(self.bholder, "bsub:" + self.bsub)
                 self.remember(self.holder, self.page_key())
 
         # раз в ~секунду: если настройки поменялись — сохраняем в файл
@@ -5235,6 +5845,7 @@ if __name__ == "__main__":
     listener = keyboard.Listener(win32_event_filter=win_filter)
     listener.start()
     update_mouse_hook()                        # мышь перехватываем, только если -w на мыши
+    threading.Thread(target=faceit_watch, daemon=True).start()
     import threading
     import traceback
     threading.excepthook = lambda a: write_crash(          # ошибки в потоках (клавиатура, мышь, трей)
