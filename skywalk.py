@@ -1765,7 +1765,7 @@ TR = {
         "regions": "регионы", "regions_sub": "пинг в мс · не выбрано — любой",
         "regions_empty": "нажми «проверить», чтобы загрузить регионы",
         "watch": "слежка", "watch_sub": "проверять каждые 45 сек",
-        "steam_key": "steam api key", "steam_key_sub": "нужен для списка серверов",
+        "steam_key": "steam api key", "steam_key_sub": "необязательно — без него общий список",
         "check_now": "проверить", "click_hint": "клик по строке — подключиться",
         "st_nokey": "вставь steam api key: ⚙ → интерфейс",
         "st_badkey": "ключ steam не подходит", "st_net": "нет связи со steam",
@@ -1867,7 +1867,7 @@ TR = {
         "regions": "regions", "regions_sub": "ping in ms · none selected — any",
         "regions_empty": "press “check” to load regions",
         "watch": "watch", "watch_sub": "check every 45 s",
-        "steam_key": "steam api key", "steam_key_sub": "needed for the server list",
+        "steam_key": "steam api key", "steam_key_sub": "optional — shared list without it",
         "check_now": "check", "click_hint": "click a line to connect",
         "st_nokey": "add steam api key: ⚙ → interface",
         "st_badkey": "steam key rejected", "st_net": "can't reach steam",
@@ -1969,7 +1969,7 @@ TR = {
         "regions": "регіони", "regions_sub": "пінг у мс · не вибрано — будь-який",
         "regions_empty": "натисни «перевірити», щоб завантажити регіони",
         "watch": "стеження", "watch_sub": "перевіряти кожні 45 с",
-        "steam_key": "steam api key", "steam_key_sub": "потрібен для списку серверів",
+        "steam_key": "steam api key", "steam_key_sub": "необов’язково — без нього спільний список",
         "check_now": "перевірити", "click_hint": "клік по рядку — підключитися",
         "st_nokey": "встав steam api key: ⚙ → інтерфейс",
         "st_badkey": "ключ steam не підходить", "st_net": "немає зв’язку зі steam",
@@ -2968,13 +2968,21 @@ class MapWatcher:
     def _run(self):
         try:
             key = prefs["steam_key"].strip()
-            if not key:
-                self.error = "nokey"
-                return
-            query = urllib.parse.urlencode({"key": key, "filter": STEAM_FILTER, "limit": 5000})
-            req = urllib.request.Request(STEAM_URL + "?" + query, headers={"User-Agent": "skywalk"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
+            shared_err = None
+            if key:                               # свой ключ — спрашиваем Steam напрямую
+                query = urllib.parse.urlencode({"key": key, "filter": STEAM_FILTER, "limit": 5000})
+                req = urllib.request.Request(STEAM_URL + "?" + query, headers={"User-Agent": "skywalk"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    raw = json.loads(resp.read().decode("utf-8"))
+            else:                                 # своего ключа нет — общий список с сервера skywalk
+                got = cloud_call("kz_servers", {})   # (ключ автора хранится там и в программу не попадает)
+                if isinstance(got, dict) and isinstance(got.get("servers"), list):
+                    raw = {"response": {"servers": got["servers"]}}
+                    shared_err = got.get("error")
+                else:
+                    raw, shared_err = {"response": {"servers": []}}, "net"
+                if shared_err:
+                    log(f"общий список серверов: {shared_err} — проверяю только уже известные сервера")
             servers = parse_servers(raw)
             total = len(raw.get("response", {}).get("servers", []) or [])
 
@@ -3021,7 +3029,9 @@ class MapWatcher:
                 vals = [ping[s["addr"]] for s in lst if ping.get(s["addr"]) is not None]
                 region_ping[region] = min(vals) if vals else None
 
-            self.servers, self.ping, self.region_ping, self.error = servers, ping, region_ping, None
+            # без своего ключа и без общего списка, если не ответил ни один известный сервер, — это «нет связи»
+            err = "net" if not key and shared_err and not servers else None
+            self.servers, self.ping, self.region_ping, self.error = servers, ping, region_ping, err
             # поиск скрытых серверов — только ПОСЛЕ проверки: тогда уже известно, кого прислал Steam,
             # и обходить нужно лишь «скрытые» машины (иначе — все 70 машин и пара минут лишней работы)
             if time.time() - self.discovered >= DISCOVER_EVERY and not self.discovering:
@@ -3602,7 +3612,8 @@ CHANGELOG = [
                   "в «о программе» — спасибо climbcore++ (@zenpakuzanjiro): skywalk вдохновлён им",
                   "общая таблица (во вкладке «рекорды», выключена по умолчанию): если включить, автор видит "
                   "твой ник, рекорды и что программа запущена",
-                  "новая версия сама закрывает старую (если та запущена) и убирает старый .exe в корзину"],
+                  "новая версия сама закрывает старую (если та запущена) и убирает старый .exe в корзину",
+                  "слежка за картами работает без своего steam api key — список серверов приходит с сервера skywalk"],
                  ["new binds: instastrafe left / right (also with crouch), mouse turns with your own speed",
                   "binds are split into sub-tabs: jumps, strafes, control",
                   "panic key — turn everything off and hide the window",
@@ -3613,7 +3624,8 @@ CHANGELOG = [
                   "«about» now credits climbcore++ (@zenpakuzanjiro), which inspired skywalk",
                   "shared table (records tab, off by default): when on, the author sees your nick, records "
                   "and that skywalk is running",
-                  "new version closes the old one if it is running and moves the old .exe to the recycle bin"]),
+                  "new version closes the old one if it is running and moves the old .exe to the recycle bin",
+                  "map watch works without your own steam api key — the server list comes from the skywalk server"]),
     ("demo 8.7", ["31 новая карта cybershoke с тирами (подсказки и тир в слежке), у 5 карт обновлён тир"],
                  ["31 new cybershoke maps with tiers (suggestions and tier in map watch), 5 tiers updated"]),
     ("demo 8.6", ["рекорды хранятся ещё и в отдельном файле — их не сотрёт даже старая версия программы"],
@@ -5116,7 +5128,7 @@ class App(ctk.CTk):
         elif err in ("nokey", "badkey", "net"):
             status = tr("st_" + err)
         elif not watcher.checked:
-            status = tr("st_nokey") if not prefs["steam_key"] else tr("st_idle")
+            status = tr("st_idle")
         else:
             status = tr("st_ok", n=len(watcher.servers), ago=int(time.time() - watcher.checked))
         self._set(self.watch_status, "wst", text=status)
@@ -5411,7 +5423,7 @@ class App(ctk.CTk):
             self.hide_jump()                  # карточка прыжка — только на вкладке «рекорды»
         first = self.tab is None
         self.tab = name
-        if name == "maps" and prefs["steam_key"] and time.time() - watcher.checked > 60:
+        if name == "maps" and time.time() - watcher.checked > 60:
             watcher.refresh()                 # данные устарели — подгружаем свежие
         page = self.pages[name]
 

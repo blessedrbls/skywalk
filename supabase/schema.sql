@@ -187,3 +187,62 @@ grant execute on function public.submit_record(text, text, text, text, text, num
                                                text, timestamptz, jsonb) to anon, authenticated;
 revoke all on function public.dist_limits(text, text) from public;
 grant execute on function public.is_admin() to authenticated;
+
+-- ================== Список KZ-серверов Cybershoke для слежки за картами ==================
+-- Программа без своего Steam-ключа берёт список отсюда. Ключ автора лежит в Supabase Vault
+-- (секрет с именем steam_key) и наружу не отдаётся. Ответ Steam кэшируется на 40 секунд:
+-- сколько бы игроков ни было, к Steam уходит не больше ~1,5 запроса в минуту.
+create extension if not exists http with schema extensions;
+
+create table if not exists public.server_cache (
+    id         int primary key default 1 check (id = 1),
+    data       jsonb not null default '[]',
+    fetched_at timestamptz not null default 'epoch',
+    error      text
+);
+insert into public.server_cache (id) values (1) on conflict do nothing;
+alter table public.server_cache enable row level security;      -- напрямую не читается никем
+
+create or replace function public.kz_servers()
+    returns jsonb language plpgsql security definer set search_path = public, extensions
+as $$
+declare
+    c public.server_cache;
+    key text;
+    resp extensions.http_response;
+    servers jsonb;
+begin
+    select * into c from public.server_cache where id = 1 for update;   -- второй запрос подождёт первый
+    if c.fetched_at > now() - interval '40 seconds' then
+        return jsonb_build_object('servers', c.data, 'age', extract(epoch from now() - c.fetched_at)::int,
+                                  'error', c.error);
+    end if;
+    select decrypted_secret into key from vault.decrypted_secrets where name = 'steam_key' limit 1;
+    if key is null then
+        update public.server_cache set fetched_at = now(), error = 'nokey' where id = 1;
+        return jsonb_build_object('servers', c.data, 'age', null, 'error', 'nokey');
+    end if;
+    perform extensions.http_set_curlopt('CURLOPT_TIMEOUT_MS', '8000');
+    begin
+        resp := extensions.http_get('https://api.steampowered.com/IGameServersService/GetServerList/v1/?key='
+            || key || '&limit=5000&filter=%5Cappid%5C730%5Cname_match%5C%2AKZ%20%23%2ACYBERSHOKE%2A');
+    exception when others then
+        update public.server_cache set fetched_at = now() - interval '25 seconds', error = 'net' where id = 1;
+        return jsonb_build_object('servers', c.data, 'age', null, 'error', 'net');
+    end;
+    if resp.status <> 200 then
+        update public.server_cache set fetched_at = now() - interval '25 seconds',
+               error = case when resp.status in (401, 403) then 'badkey' else 'net' end where id = 1;
+        return jsonb_build_object('servers', c.data, 'age', null, 'error', 'steam ' || resp.status);
+    end if;
+    select coalesce(jsonb_agg(jsonb_build_object('addr', s ->> 'addr', 'name', s ->> 'name', 'map', s ->> 'map',
+                                                 'players', (s ->> 'players')::int,
+                                                 'max_players', (s ->> 'max_players')::int)), '[]')
+        into servers
+        from jsonb_array_elements(coalesce(resp.content::jsonb -> 'response' -> 'servers', '[]')) s;
+    update public.server_cache set data = servers, fetched_at = now(), error = null where id = 1;
+    return jsonb_build_object('servers', servers, 'age', 0, 'error', null);
+end $$;
+
+revoke all on function public.kz_servers() from public;
+grant execute on function public.kz_servers() to anon, authenticated;
