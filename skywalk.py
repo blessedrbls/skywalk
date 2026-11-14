@@ -2033,6 +2033,7 @@ DEFAULT_PREFS = {"accent": "blue", "overlay": False, "overlay_pos": "mr",  # п�
                  "faceit_off": True,         # выключаться, пока работает FACEIT Anti-Cheat
                  "share": False,             # отправлять автору ник, «программа запущена» и рекорды (только с согласия)
                  "shared": {},               # какие рекорды уже отправлены: {"LJ": 278.41}
+                 "exe_path": "", "exe_version": "",   # где лежит последняя запущенная версия (.exe) и какая
                  "preset": "1", "presets": {},   # пресеты биндов: какой сейчас и что лежит в остальных
                  # слежка за картами на серверах Cybershoke
                  "steam_key": "", "watch_maps": [], "watch_regions": [], "watch_on": False,
@@ -2072,9 +2073,11 @@ def reset_settings():
     records = prefs.get("records", {})        # рекорды прыжков «сброс» не трогает — у них своя кнопка
     history = prefs.get("history", {})
     shared = prefs.get("shared", {})          # что уже отправлено — тоже знания, а не настройка
+    exe = (prefs.get("exe_path", ""), prefs.get("exe_version", ""))
     prefs.clear()
     prefs.update(DEFAULT_PREFS, watch_regions=[], watch_maps=[], steam_key=key, known_maps=known,
-                 kz_servers=servers, records=records, history=history, shared=shared)
+                 kz_servers=servers, records=records, history=history, shared=shared,
+                 exe_path=exe[0], exe_version=exe[1])
     set_accent(prefs["accent"])
     rebuild_sounds()
 
@@ -2265,6 +2268,9 @@ def load_settings():
     for key in ("auto_on", "faceit_off", "share"):
         if isinstance(p.get(key), bool):
             prefs[key] = p[key]
+    for key in ("exe_path", "exe_version"):
+        if isinstance(p.get(key), str):
+            prefs[key] = p[key][:500]
     if isinstance(p.get("shared"), dict):
         prefs["shared"] = {k: float(v) for k, v in p["shared"].items()
                            if k in JUMP_NAMES and isinstance(v, (int, float))}
@@ -3595,7 +3601,8 @@ CHANGELOG = [
                   "свой цвет интерфейса (#rrggbb), украинский язык",
                   "в «о программе» — спасибо climbcore++ (@zenpakuzanjiro): skywalk вдохновлён им",
                   "общая таблица (во вкладке «рекорды», выключена по умолчанию): если включить, автор видит "
-                  "твой ник, рекорды и что программа запущена"],
+                  "твой ник, рекорды и что программа запущена",
+                  "новая версия сама закрывает старую (если та запущена) и убирает старый .exe в корзину"],
                  ["new binds: instastrafe left / right (also with crouch), mouse turns with your own speed",
                   "binds are split into sub-tabs: jumps, strafes, control",
                   "panic key — turn everything off and hide the window",
@@ -3605,7 +3612,8 @@ CHANGELOG = [
                   "custom interface color (#rrggbb), ukrainian language",
                   "«about» now credits climbcore++ (@zenpakuzanjiro), which inspired skywalk",
                   "shared table (records tab, off by default): when on, the author sees your nick, records "
-                  "and that skywalk is running"]),
+                  "and that skywalk is running",
+                  "new version closes the old one if it is running and moves the old .exe to the recycle bin"]),
     ("demo 8.7", ["31 новая карта cybershoke с тирами (подсказки и тир в слежке), у 5 карт обновлён тир"],
                  ["31 new cybershoke maps with tiers (suggestions and tier in map watch), 5 tiers updated"]),
     ("demo 8.6", ["рекорды хранятся ещё и в отдельном файле — их не сотрёт даже старая версия программы"],
@@ -5834,25 +5842,149 @@ SINGLE_MUTEX = "Local\\Skywalk_single_instance"
 SHOW_EVENT = "Local\\Skywalk_show_window"
 
 
-def already_running():
-    """True — Skywalk уже запущена (и мы попросили её показать окно)."""
+HANDOFF = os.path.join(tempfile.gettempdir(), "skywalk_handoff.json")      # просьба второй копии
+HANDOFF_ACK = os.path.join(tempfile.gettempdir(), "skywalk_handoff_ack.json")  # ответ запущенной копии
+
+
+def version_key(v):
+    """«demo 8.10» → (8, 10): версии сравниваем как числа, а не как строки."""
+    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+
+def write_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError:
+        pass
+
+
+def read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def mutex_taken():
+    """Занято ли имя Skywalk (то есть работает ли другая копия). Свой хэндл держим в _mutex."""
     global _mutex
-    _mutex = kernel32.CreateMutexW(None, False, SINGLE_MUTEX)   # держим, пока программа работает
-    if ctypes.get_last_error() != 183:                            # 183 = ERROR_ALREADY_EXISTS
+    if _mutex:
+        kernel32.CloseHandle(_mutex)
+    _mutex = kernel32.CreateMutexW(None, False, SINGLE_MUTEX)
+    return ctypes.get_last_error() == 183                     # 183 = ERROR_ALREADY_EXISTS
+
+
+_mutex = None
+
+
+def already_running():
+    """True — Skywalk уже запущена, а мы выходим. Запущенную копию просим показать окно, но если она
+    СТАРШЕ нас (скачали новую версию), она закрывается сама — и дальше работаем мы.
+    Версии до 8.8 так не умеют: тогда просим человека закрыть старую самому."""
+    if not mutex_taken():
         return False
+    for path in (HANDOFF_ACK,):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    asked = time.time()
+    write_json(HANDOFF, {"version": VERSION, "time": asked})
     ev = kernel32.OpenEventW(0x0002, False, SHOW_EVENT)          # 0x0002 = право «поднять» событие
     if ev:
         kernel32.SetEvent(ev)
         kernel32.CloseHandle(ev)
+    ack = None
+    while time.time() - asked < 8:
+        time.sleep(0.25)
+        if ack is None:
+            got = read_json(HANDOFF_ACK)
+            if got and got.get("time", 0) >= asked - 1:
+                ack = got
+        if ack is not None and not ack.get("quitting"):
+            return True                                           # там та же или новее — она покажет окно
+        if not mutex_taken():
+            return False                                          # старая закрылась — работаем мы
+        if ack is None and time.time() - asked > 2:
+            break                                                 # не отвечает — это версия до 8.8
+    if ack is None:
+        user32.MessageBoxW(None, "Уже запущена другая версия skywalk.\n"
+                                 "Закрой её (значок в трее → выход) и запусти эту ещё раз.\n\n"
+                                 "Another skywalk version is running. Close it (tray icon → exit) "
+                                 "and start this one again.", "skywalk", 0x40)
     return True
 
 
 def listen_show_requests(commands):
-    """Поток первой копии: ждём просьбу второй копии и показываем окно (как «открыть» из трея)."""
+    """Поток первой копии: вторая копия просит показать окно. Если вторая копия НОВЕЕ — закрываемся
+    сами (сохранив настройки), чтобы работала новая версия."""
     ev = kernel32.CreateEventW(None, False, False, SHOW_EVENT)    # сбрасывается сам после срабатывания
     while ev:
-        if kernel32.WaitForSingleObject(ev, 0xFFFFFFFF) == 0:   # ждём бесконечно, 0 — дождались
+        if kernel32.WaitForSingleObject(ev, 0xFFFFFFFF) != 0:   # ждём бесконечно, 0 — дождались
+            continue
+        req = read_json(HANDOFF)
+        newer = bool(req and time.time() - req.get("time", 0) < 15
+                     and version_key(str(req.get("version"))) > version_key(VERSION))
+        write_json(HANDOFF_ACK, {"version": VERSION, "time": time.time(), "quitting": newer})
+        if newer:
+            log(f"запущена новая версия ({req.get('version')}) — закрываюсь, чтобы работала она")
+            commands.put("exit")
+        else:
             commands.put("show")
+
+
+# ================== Старая версия после обновления — в корзину ==================
+# Скачал новую версию и запустил её — старый Skywalk.exe больше не нужен. Удаляем (в КОРЗИНУ, его можно
+# вернуть) только то, что точно наша старая версия:
+#   * файл, откуда в прошлый раз запускалась версия старше этой (путь помним в настройках);
+#   * копии рядом с нами с именем как у скачанного браузером «Skywalk.exe» / «Skywalk (1).exe», которые
+#     старше нас по дате файла.
+OLD_EXE_RE = re.compile(r"^skywalk(?: ?\(\d+\))?\.exe$", re.I)
+
+
+def to_recycle_bin(path):
+    """Переместить файл в корзину Windows. True — получилось."""
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+    # FO_DELETE = 3; FOF_SILENT 0x4 | FOF_NOCONFIRMATION 0x10 | FOF_ALLOWUNDO 0x40 (в корзину) | FOF_NOERRORUI 0x400
+    op = SHFILEOPSTRUCTW(None, 3, path + "\0", None, 0x4 | 0x10 | 0x40 | 0x400, False, None, None)
+    try:
+        ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    except Exception as e:
+        log(f"старая версия: не удалось убрать {path}: {e!r}")
+    return not os.path.exists(path)
+
+
+def clean_old_versions():
+    """Зовём при запуске собранного .exe (после загрузки настроек). Запоминает, где лежит эта версия."""
+    if not getattr(sys, "frozen", False):
+        return                                                    # запуск из исходников — ничего не трогаем
+    me = os.path.abspath(sys.executable)
+    same = lambda a, b: os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    old = []
+    last, last_ver = prefs.get("exe_path", ""), prefs.get("exe_version", "")
+    if last and not same(last, me) and os.path.isfile(last) and version_key(last_ver) < version_key(VERSION) \
+            and last.lower().endswith(".exe"):
+        old.append(last)
+    try:
+        my_time = os.path.getmtime(me)
+        folder = os.path.dirname(me)
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if OLD_EXE_RE.match(name) and not same(path, me) and os.path.isfile(path) \
+                    and os.path.getmtime(path) < my_time and path not in old:
+                old.append(path)
+    except OSError:
+        pass
+    for path in old:
+        log(f"старая версия: {path} → " + ("в корзине" if to_recycle_bin(path) else "не получилось"))
+    if version_key(VERSION) >= version_key(last_ver):
+        prefs["exe_path"], prefs["exe_version"] = me, VERSION
 
 
 if __name__ == "__main__":
@@ -5860,6 +5992,7 @@ if __name__ == "__main__":
         sys.exit(0)
     setup_timing()                             # герцовка монитора + точный таймер
     load_settings()
+    clean_old_versions()                       # скачали новую версию — старый .exe в корзину
     save_records_copy(prefs)                   # копия рекордов — сразу при запуске (см. RECORDS_PATH)
     refresh_cs2_binds()                        # какие клавиши в CS2 прыжок / присед / cp / tp
     rebuild_sounds()                           # звук мог поменяться после загрузки настроек
