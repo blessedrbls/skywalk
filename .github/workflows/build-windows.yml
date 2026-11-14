@@ -1,0 +1,45 @@
+# Сборка Skywalk.exe на Windows в GitHub Actions — так exe можно собрать без своего Windows-компьютера.
+# Запускается сама при новом теге demo-* (например demo-8.8) или вручную (Actions → build-windows → Run).
+# Готовый exe лежит в артефакте «Skywalk» у запуска; релиз с ним делается отдельно.
+name: build-windows
+
+on:
+  push:
+    tags: ["demo-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libraries
+        run: python -m pip install customtkinter pynput pillow pystray pyinstaller
+
+      - name: Build Skywalk.exe (same command as build.bat)
+        run: python -m PyInstaller --noconsole --onefile --noconfirm --name "Skywalk" --icon icon.ico --add-data "icon.ico;." --hidden-import pystray._win32 skywalk.py
+
+      - name: Smoke test — exe starts and does not crash
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\Skywalk.exe" -PassThru
+          Start-Sleep -Seconds 15
+          $crash = Join-Path $env:APPDATA "Skywalk\crash.txt"
+          if (Test-Path $crash) { Get-Content $crash; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; exit 1 }
+          if ($p.HasExited) { Write-Error "Skywalk.exe exited on its own (code $($p.ExitCode))"; exit 1 }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "Skywalk.exe ran for 15 s without errors"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Skywalk
+          path: dist/Skywalk.exe
+          if-no-files-found: error
