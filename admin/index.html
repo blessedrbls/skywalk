@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>skywalk · админка</title>
+<style>
+  :root {
+    --bg: #0b0b0d; --panel: #151518; --panel2: #1b1b20; --line: #26262c;
+    --text: #ececf0; --muted: #8a8a94; --accent: #4f7cff; --accent-dim: #1e3a8a;
+    --ok: #2ee6a6; --warn: #ffb84d; --bad: #ff4d5e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 60px; }
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .logo { font: 900 30px/1 "Arial Black", system-ui, sans-serif; letter-spacing: -0.5px; }
+  .logo b { color: var(--accent); text-shadow: 0 0 24px rgba(79,124,255,.55); }
+  header .who { margin-left: auto; color: var(--muted); font-size: 13px; }
+  button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
+           border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ok { border-color: rgba(46,230,166,.5); color: var(--ok); }
+  button.bad { border-color: rgba(255,77,94,.5); color: var(--bad); }
+  button.small { padding: 3px 10px; font-size: 12px; }
+  input { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
+          border-radius: 10px; padding: 9px 12px; width: 100%; }
+  input:focus { outline: none; border-color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
+  .login { max-width: 360px; margin: 12vh auto 0; display: grid; gap: 12px; }
+  .login h2 { margin: 0 0 4px; font-size: 18px; }
+  .err { color: var(--bad); font-size: 13px; min-height: 18px; }
+  .note { color: var(--muted); font-size: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .stat .v { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { color: var(--muted); font-size: 12px; text-transform: lowercase; }
+  .stat .v small { font-size: 13px; color: var(--muted); font-weight: 400; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tabs button.active { background: var(--accent-dim); border-color: var(--accent); }
+  .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--warn); color: #000;
+           font-size: 11px; font-weight: 700; margin-left: 6px; text-align: center; }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num { text-align: right; font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  .reason { color: var(--warn); white-space: normal; min-width: 220px; font-size: 13px; }
+  .muted { color: var(--muted); }
+  .actions { display: flex; gap: 6px; }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .empty { color: var(--muted); padding: 28px 0; text-align: center; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .strafes { font-size: 12px; margin-top: 6px; }
+  .strafes td, .strafes th { padding: 3px 8px; }
+  .banned { color: var(--bad); font-size: 12px; margin-left: 6px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><b>sky</b>walk</div>
+    <div class="muted">админка</div>
+    <div class="who" id="who"></div>
+  </header>
+
+  <!-- вход -->
+  <form class="card login hidden" id="login">
+    <h2>Вход для автора</h2>
+    <input id="email" type="email" placeholder="email" autocomplete="username" required>
+    <input id="password" type="password" placeholder="пароль" autocomplete="current-password" required>
+    <button class="primary" type="submit">Войти</button>
+    <div class="err" id="loginErr"></div>
+    <div class="note">Аккаунт создаётся в Supabase → Authentication → Users, а доступ выдаётся через таблицу admins.</div>
+  </form>
+
+  <!-- панель -->
+  <main id="panel" class="hidden">
+    <section class="stats">
+      <div class="card stat"><div class="v" id="sOnline">—</div><div class="k">онлайн сейчас</div></div>
+      <div class="card stat"><div class="v" id="sPlayers">—</div><div class="k">игроков всего</div></div>
+      <div class="card stat"><div class="v" id="sRecords">—</div><div class="k">рекордов принято</div></div>
+      <div class="card stat"><div class="v" id="sPending">—</div><div class="k">ждут проверки</div></div>
+      <div class="card stat"><div class="v" id="sDownloads">—</div><div class="k">скачиваний с github</div></div>
+    </section>
+
+    <div class="tabs" id="tabs">
+      <button data-tab="pending" class="active">на проверке<span class="badge hidden" id="pendingBadge"></span></button>
+      <button data-tab="board">рекорды</button>
+      <button data-tab="players">игроки</button>
+      <button data-tab="downloads">скачивания</button>
+      <span style="flex:1"></span>
+      <button id="refresh" class="small">обновить</button>
+      <button id="logout" class="small">выйти</button>
+    </div>
+
+    <section class="card" id="tab-pending"></section>
+    <section class="card hidden" id="tab-board">
+      <div class="filters" id="abbrFilter"></div>
+      <div id="boardBody"></div>
+    </section>
+    <section class="card hidden" id="tab-players"></section>
+    <section class="card hidden" id="tab-downloads"></section>
+    <p class="note" id="updated"></p>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+// Публичный ключ — тот же, что в программе. Видеть данные можно только после входа админом
+// (это проверяет база: таблица admins + правила доступа), поэтому файл можно хранить где угодно.
+const SUPABASE_URL = "https://rytjymvzxsgycbzebvnl.supabase.co";
+const SUPABASE_KEY = "sb_publishable_fgV2G70Dt7qi6ZSPIq0cwQ_XUmojyWU";
+const GITHUB_REPO = "blessedrbls/skywalk";
+const ONLINE_MS = 2 * 60 * 1000;                 // «онлайн» — сигнал не старше 2 минут
+const TYPES = ["LJ", "BH", "MBH", "WJ", "LAJ", "LAH", "JB", "LBH", "LWJ"];
+
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const num = (v, d = 2) => v === null || v === undefined ? "—" : Number(v).toFixed(d);
+const steamLink = id => `<a href="https://steamcommunity.com/profiles/${esc(id)}" target="_blank" rel="noopener">${esc(id)}</a>`;
+let state = {tab: "pending", abbr: "LJ", players: [], records: []};
+
+function ago(ts) {
+  const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
+  if (s < 60) return `${Math.round(s)} с назад`;
+  if (s < 3600) return `${Math.round(s / 60)} мин назад`;
+  if (s < 86400) return `${Math.round(s / 3600)} ч назад`;
+  return new Date(ts).toLocaleDateString("ru-RU");
+}
+const isOnline = p => Date.now() - new Date(p.last_seen).getTime() < ONLINE_MS;
+
+// ---------- вход ----------
+async function start() {
+  const { data: { session } } = await db.auth.getSession();
+  if (!session) return showLogin();
+  const { data: admin, error } = await db.rpc("is_admin");
+  if (error || !admin) {
+    showLogin(`Аккаунт ${session.user.email} не админ. Его id: ${session.user.id}`);
+    return;
+  }
+  $("who").textContent = session.user.email;
+  $("login").classList.add("hidden");
+  $("panel").classList.remove("hidden");
+  await load();
+  loadDownloads();
+  setInterval(load, 20000);
+}
+function showLogin(msg = "") {
+  $("panel").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("loginErr").textContent = msg;
+}
+$("login").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("loginErr").textContent = "";
+  const { error } = await db.auth.signInWithPassword({email: $("email").value.trim(), password: $("password").value});
+  if (error) { $("loginErr").textContent = "Не вышло: " + error.message; return; }
+  start();
+});
+$("logout").onclick = async () => { await db.auth.signOut(); location.reload(); };
+$("refresh").onclick = () => { load(); loadDownloads(); };
+$("tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  state.tab = b.dataset.tab;
+  document.querySelectorAll("#tabs button[data-tab]").forEach(x => x.classList.toggle("active", x === b));
+  ["pending", "board", "players", "downloads"].forEach(t => $("tab-" + t).classList.toggle("hidden", t !== state.tab));
+});
+
+// ---------- данные ----------
+async function load() {
+  const [p, r] = await Promise.all([
+    db.from("players").select("*").order("last_seen", {ascending: false}),
+    db.from("records").select("*").order("created_at", {ascending: false}).limit(2000),
+  ]);
+  if (p.error || r.error) { $("updated").textContent = "Ошибка загрузки: " + (p.error || r.error).message; return; }
+  state.players = p.data;
+  state.records = r.data;
+  render();
+  $("updated").textContent = "обновлено " + new Date().toLocaleTimeString("ru-RU") + " · само обновляется раз в 20 с";
+}
+const nickOf = sid => (state.players.find(p => p.steam_id === sid) || {}).nick || sid;
+const playerOf = sid => state.players.find(p => p.steam_id === sid) || {};
+
+function render() {
+  const online = state.players.filter(isOnline);
+  const pending = state.records.filter(r => r.status === "pending");
+  $("sOnline").innerHTML = online.length;
+  $("sPlayers").textContent = state.players.length;
+  $("sRecords").textContent = state.records.filter(r => r.status === "approved").length;
+  $("sPending").textContent = pending.length;
+  $("pendingBadge").textContent = pending.length;
+  $("pendingBadge").classList.toggle("hidden", !pending.length);
+  renderPending(pending);
+  renderBoard();
+  renderPlayers();
+}
+
+function strafeTable(details) {
+  const rows = (details && details.strafe_rows) || [];
+  if (!rows.length) return '<span class="muted">стрейфов нет</span>';
+  return `<details><summary>стрейфы (${rows.length})</summary><table class="strafes"><tr>
+    <th>#</th><th>sync</th><th>gain</th><th>loss</th><th>bad</th><th>ovl</th><th>dead</th></tr>${
+    rows.map(s => `<tr><td>${esc(s.n)}</td><td>${num(s.sync, 0)}%</td><td>${num(s.gain)}</td><td>${num(s.loss)}</td>
+      <td>${num(s.bad, 0)}%</td><td>${num(s.ovl, 0)}%</td><td>${num(s.dead, 0)}%</td></tr>`).join("")}</table></details>`;
+}
+
+function renderPending(list) {
+  if (!list.length) { $("tab-pending").innerHTML = '<div class="empty">Нечего проверять ✓</div>'; return; }
+  $("tab-pending").innerHTML = `<div class="scroll"><table><tr><th>игрок</th><th>прыжок</th><th class="num">дист</th>
+    <th>pre · sync · стр</th><th>почему на проверке</th><th>подробно</th><th></th></tr>${list.map(r => `<tr>
+      <td>${esc(nickOf(r.steam_id))}<br><span class="muted">${steamLink(r.steam_id)}</span></td>
+      <td>${esc(r.abbr)} <span class="muted">${esc(r.mode)}</span><br><span class="muted">${esc(r.map || "")}</span></td>
+      <td class="num">${num(r.dist, 3)}</td>
+      <td>${num(r.pre, 1)} · ${num(r.sync, 0)}% · ${r.strafes ?? "—"}</td>
+      <td class="reason">${esc(r.reason)}</td>
+      <td>${strafeTable(r.details)}</td>
+      <td><div class="actions">
+        <button class="ok small" onclick="setStatus(${r.id}, 'approved')">принять</button>
+        <button class="bad small" onclick="setStatus(${r.id}, 'rejected')">отклонить</button>
+      </div></td></tr>`).join("")}</table></div>`;
+}
+
+function renderBoard() {
+  $("abbrFilter").innerHTML = TYPES.map(t => `<button class="small ${t === state.abbr ? "primary" : ""}"
+    onclick="state.abbr='${t}'; renderBoard()">${t.toLowerCase()}</button>`).join("");
+  // лучший принятый прыжок каждого игрока этого типа
+  const best = {};
+  for (const r of state.records) {
+    if (r.abbr !== state.abbr || r.status !== "approved") continue;
+    if (!best[r.steam_id] || Number(r.dist) > Number(best[r.steam_id].dist)) best[r.steam_id] = r;
+  }
+  const list = Object.values(best).sort((a, b) => b.dist - a.dist);
+  if (!list.length) { $("boardBody").innerHTML = '<div class="empty">Пока нет принятых рекордов этого типа</div>'; return; }
+  $("boardBody").innerHTML = `<div class="scroll"><table><tr><th>#</th><th>игрок</th><th class="num">дист</th><th>pre</th><th>sync</th>
+    <th>стр</th><th>карта</th><th>когда</th><th></th></tr>${list.map((r, i) => {
+      const p = playerOf(r.steam_id);
+      return `<tr><td class="muted">${i + 1}</td>
+        <td><span class="dot ${isOnline(p) ? "on" : ""}"></span>${esc(p.nick || r.steam_id)}${p.banned ? '<span class="banned">бан</span>' : ""}</td>
+        <td class="num">${num(r.dist, 3)}</td><td>${num(r.pre, 1)}</td><td>${num(r.sync, 0)}%</td><td>${r.strafes ?? "—"}</td>
+        <td class="muted">${esc(r.map || "")}</td><td class="muted">${ago(r.jumped_at || r.created_at)}</td>
+        <td><button class="bad small" onclick="setStatus(${r.id}, 'rejected')">убрать</button></td></tr>`;
+    }).join("")}</table></div>`;
+}
+
+function renderPlayers() {
+  if (!state.players.length) { $("tab-players").innerHTML = '<div class="empty">Пока никто не включил общую таблицу</div>'; return; }
+  $("tab-players").innerHTML = `<div class="scroll"><table><tr><th>игрок</th><th>steam</th><th>версия</th><th>последний раз</th>
+    <th>впервые</th><th>рекордов</th><th></th></tr>${state.players.map(p => `<tr>
+      <td><span class="dot ${isOnline(p) ? "on" : ""}"></span>${esc(p.nick)}${p.banned ? '<span class="banned">бан</span>' : ""}</td>
+      <td>${steamLink(p.steam_id)}</td><td class="muted">${esc(p.version || "")}</td>
+      <td>${isOnline(p) ? "онлайн" : ago(p.last_seen)}</td><td class="muted">${ago(p.first_seen)}</td>
+      <td>${state.records.filter(r => r.steam_id === p.steam_id && r.status === "approved").length}</td>
+      <td>${p.banned
+        ? `<button class="small" onclick="setBan('${esc(p.steam_id)}', false)">разбанить</button>`
+        : `<button class="bad small" onclick="setBan('${esc(p.steam_id)}', true)">забанить</button>`}</td></tr>`).join("")}</table></div>`;
+}
+
+async function setStatus(id, status) {
+  const { error } = await db.from("records").update({status}).eq("id", id);
+  if (error) alert("Не вышло: " + error.message);
+  load();
+}
+async function setBan(steamId, banned) {
+  if (banned && !confirm("Забанить игрока? Его новые рекорды перестанут приниматься, а принятые будут убраны.")) return;
+  const { error } = await db.from("players").update({banned}).eq("steam_id", steamId);
+  if (!error && banned) await db.from("records").update({status: "rejected"}).eq("steam_id", steamId);
+  if (error) alert("Не вышло: " + error.message);
+  load();
+}
+
+// ---------- скачивания (GitHub считает их сам) ----------
+async function loadDownloads() {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100`);
+    const rels = await res.json();
+    if (!Array.isArray(rels)) throw new Error(rels.message || "нет ответа");
+    let total = 0;
+    const rows = rels.map(r => {
+      const n = r.assets.reduce((s, a) => s + a.download_count, 0);
+      total += n;
+      return `<tr><td>${esc(r.name || r.tag_name)}</td><td class="muted">${new Date(r.published_at).toLocaleDateString("ru-RU")}</td><td class="num">${n}</td></tr>`;
+    });
+    $("sDownloads").textContent = total;
+    $("tab-downloads").innerHTML = `<table><tr><th>релиз</th><th>дата</th><th class="num">скачиваний</th></tr>${rows.join("")}</table>
+      <p class="note">GitHub считает каждое скачивание файла, включая твои собственные.</p>`;
+  } catch (e) {
+    $("sDownloads").textContent = "—";
+    $("tab-downloads").innerHTML = `<div class="empty">Не удалось получить данные GitHub: ${esc(e.message)}</div>`;
+  }
+}
+
+start();
+</script>
+</body>
+</html>

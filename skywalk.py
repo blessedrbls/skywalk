@@ -727,6 +727,22 @@ def steam_nick():
     return best
 
 
+def steam_account():
+    """(Steam ID, ник) аккаунта, в который входили последним. Steam ID — публичный номер профиля
+    (как в ссылке steamcommunity.com/profiles/…), не пароль и не доступ к аккаунту."""
+    try:
+        with open(os.path.join(steam_dir(), "config", "loginusers.vdf"), encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return "", ""
+    best = ("", "")
+    for sid, block in re.findall(r'"(\d{17})"\s*\{([^}]*)\}', text):
+        name = re.search(r'"PersonaName"\s+"([^"]*)"', block)
+        if name and (not best[0] or re.search(r'"MostRecent"\s+"1"', block)):
+            best = (sid, name.group(1))
+    return best
+
+
 def current_nick():
     """Чьи прыжки считать: ник Steam-аккаунта, в котором сейчас человек (CS2 берёт ник оттуда же)."""
     return record_watcher.auto_nick
@@ -978,6 +994,87 @@ class RecordWatcher:
 
 
 record_watcher = RecordWatcher()
+
+
+# ================== Общая таблица: онлайн и рекорды (только с согласия) ==================
+# Включается переключателем «отправлять ник и рекорды». Тогда раз в минуту программа сообщает
+# «я запущена» (Steam ID, ник, версия), а новые рекорды — вместе со стрейфами, чтобы сервер мог их проверить.
+# Ключ ниже — ПУБЛИЧНЫЙ (publishable): с ним можно только вызвать две функции на сервере (heartbeat и
+# submit_record), читать или менять таблицы нельзя. Видит всё только автор в админке (папка admin).
+CLOUD_URL = "https://rytjymvzxsgycbzebvnl.supabase.co"
+CLOUD_KEY = "sb_publishable_fgV2G70Dt7qi6ZSPIq0cwQ_XUmojyWU"
+cloud = {"status": "", "banned": False}         # последний ответ сервера (для журнала и подписи в настройках)
+
+
+def cloud_call(fn, args):
+    """Вызвать функцию на сервере. Ответ — строка ('ok', 'approved', ...) или None, если нет связи."""
+    req = urllib.request.Request(f"{CLOUD_URL}/rest/v1/rpc/{fn}", data=json.dumps(args).encode("utf-8"),
+                                 headers={"apikey": CLOUD_KEY, "Content-Type": "application/json",
+                                          "User-Agent": "skywalk"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        log(f"общая таблица: {fn} — нет связи ({e.__class__.__name__})")
+        return None
+
+
+def record_payload(sid, nick, abbr, rec):
+    """Рекорд → аргументы submit_record. Стрейфы, графики и строка статистики — чтобы сервер проверил прыжок."""
+    def num(key):
+        v = rec.get(key)
+        return v if isinstance(v, (int, float)) else None
+    when = rec.get("time")
+    return {
+        "p_steam_id": sid, "p_nick": nick[:64], "p_version": VERSION,
+        "p_abbr": abbr, "p_mode": record_watcher.mode if record_watcher.mode in DIST_TIERS else "CKZ",
+        "p_dist": round(float(rec["dist"]), 3), "p_pre": num("pre"), "p_sync": num("sync"),
+        "p_strafes": int(rec["strafes"]) if num("strafes") is not None else None,
+        "p_block": int(rec["block"]) if num("block") is not None else None,
+        "p_map": rec.get("map") or None,
+        "p_jumped_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(when))
+        if isinstance(when, (int, float)) else None,
+        "p_details": {"strafe_rows": rec.get("strafe_rows") or [], "graph": rec.get("graph") or {},
+                      "stats": rec.get("details") or []},
+    }
+
+
+def cloud_worker():
+    """Отдельный поток: «я запущена» раз в минуту и отправка новых рекордов. Пока переключатель
+    выключен — ничего не отправляет. Рекорд ждёт до 30 секунд, пока из консоли дочитаются его стрейфы."""
+    next_beat = 0.0
+    while True:
+        time.sleep(5)
+        try:
+            if not prefs["share"] or cloud["banned"]:
+                continue
+            sid, nick = steam_account()
+            if not sid or not nick:
+                continue
+            now = time.time()
+            if now >= next_beat:
+                answer = cloud_call("heartbeat", {"p_steam_id": sid, "p_nick": nick[:64], "p_version": VERSION})
+                next_beat = now + (60 if answer is not None else 120)
+                if answer is not None:
+                    cloud["status"] = answer
+            for abbr, rec in list(prefs["records"].items()):
+                dist = rec.get("dist")
+                if not isinstance(dist, (int, float)) or dist <= prefs["shared"].get(abbr, 0) + 1e-6:
+                    continue
+                age = now - rec.get("time", now) if isinstance(rec.get("time"), (int, float)) else 999
+                if not rec.get("strafe_rows") and age < 30:
+                    continue                          # стрейфы ещё дочитываются
+                answer = cloud_call("submit_record", record_payload(sid, nick, abbr, rec))
+                if answer is None or answer == "too_often":
+                    break                             # нет связи / слишком часто — попробуем в следующий раз
+                log(f"общая таблица: {abbr} {dist:.2f} → {answer}")
+                cloud["status"] = answer
+                if answer == "banned":
+                    cloud["banned"] = True
+                    break
+                prefs["shared"] = dict(prefs["shared"], **{abbr: dist})   # отправлено (или сервер отказал) — не повторяем
+        except Exception as e:
+            log(f"общая таблица: ошибка {e!r}")
 
 
 # ================== Логика нуллов ==================
@@ -1698,6 +1795,7 @@ TR = {
         "faceit_on": "faceit anti-cheat сейчас запущен", "faceit_hint": "faceit anti-cheat — выключено",
         "own_color": "свой цвет", "own_color_sub": "#rrggbb и enter",
         "autostart": "запускать с windows", "autostart_sub": "при входе в систему",
+        "share": "общая таблица", "share_sub": "отправлять автору ник, рекорды и онлайн",
             },
     "en": {
         "tab_nulls": "nulls", "tab_binds": "binds",
@@ -1799,6 +1897,7 @@ TR = {
         "faceit_on": "faceit anti-cheat is running now", "faceit_hint": "faceit anti-cheat — turned off",
         "own_color": "custom color", "own_color_sub": "#rrggbb and enter",
         "autostart": "start with windows", "autostart_sub": "when you sign in",
+        "share": "shared table", "share_sub": "send the author your nick, records and online",
             },
     "uk": {
         "tab_nulls": "нули", "tab_binds": "бінди",
@@ -1900,6 +1999,7 @@ TR = {
         "faceit_on": "faceit anti-cheat зараз запущено", "faceit_hint": "faceit anti-cheat — вимкнено",
         "own_color": "власний колір", "own_color_sub": "#rrggbb і enter",
         "autostart": "запускати з windows", "autostart_sub": "при вході в систему",
+        "share": "спільна таблиця", "share_sub": "надсилати автору нік, рекорди й онлайн",
             },
 }
 LANG_LABELS = {"ru": "рус", "en": "eng", "uk": "укр"}
@@ -1931,6 +2031,8 @@ DEFAULT_PREFS = {"accent": "blue", "overlay": False, "overlay_pos": "mr",  # п�
                  "accent_hex": "",           # свой цвет «#rrggbb» (когда accent = "custom")
                  "auto_on": False,           # включать программу, когда открывается окно CS2
                  "faceit_off": True,         # выключаться, пока работает FACEIT Anti-Cheat
+                 "share": False,             # отправлять автору ник, «программа запущена» и рекорды (только с согласия)
+                 "shared": {},               # какие рекорды уже отправлены: {"LJ": 278.41}
                  "preset": "1", "presets": {},   # пресеты биндов: какой сейчас и что лежит в остальных
                  # слежка за картами на серверах Cybershoke
                  "steam_key": "", "watch_maps": [], "watch_regions": [], "watch_on": False,
@@ -1969,9 +2071,10 @@ def reset_settings():
     servers = prefs.get("kz_servers", [])     # и адреса серверов — тоже знания
     records = prefs.get("records", {})        # рекорды прыжков «сброс» не трогает — у них своя кнопка
     history = prefs.get("history", {})
+    shared = prefs.get("shared", {})          # что уже отправлено — тоже знания, а не настройка
     prefs.clear()
     prefs.update(DEFAULT_PREFS, watch_regions=[], watch_maps=[], steam_key=key, known_maps=known,
-                 kz_servers=servers, records=records, history=history)
+                 kz_servers=servers, records=records, history=history, shared=shared)
     set_accent(prefs["accent"])
     rebuild_sounds()
 
@@ -2159,9 +2262,12 @@ def load_settings():
     if p.get("accent") in ACCENTS:
         prefs["accent"] = p["accent"]
         set_accent(p["accent"])
-    for key in ("auto_on", "faceit_off"):
+    for key in ("auto_on", "faceit_off", "share"):
         if isinstance(p.get(key), bool):
             prefs[key] = p[key]
+    if isinstance(p.get("shared"), dict):
+        prefs["shared"] = {k: float(v) for k, v in p["shared"].items()
+                           if k in JUMP_NAMES and isinstance(v, (int, float))}
     if isinstance(p.get("presets"), dict):
         prefs["presets"] = {k: v for k, v in p["presets"].items() if k in PRESETS and isinstance(v, dict)}
     if p.get("preset") in PRESETS:
@@ -3487,7 +3593,9 @@ CHANGELOG = [
                   "программа сама выключается, пока работает faceit anti-cheat",
                   "можно включать программу при открытии cs2 и запускать её вместе с windows",
                   "свой цвет интерфейса (#rrggbb), украинский язык",
-                  "в «о программе» — спасибо climbcore++ (@zenpakuzanjiro): skywalk вдохновлён им"],
+                  "в «о программе» — спасибо climbcore++ (@zenpakuzanjiro): skywalk вдохновлён им",
+                  "общая таблица (во вкладке «рекорды», выключена по умолчанию): если включить, автор видит "
+                  "твой ник, рекорды и что программа запущена"],
                  ["new binds: instastrafe left / right (also with crouch), mouse turns with your own speed",
                   "binds are split into sub-tabs: jumps, strafes, control",
                   "panic key — turn everything off and hide the window",
@@ -3495,7 +3603,9 @@ CHANGELOG = [
                   "the program turns itself off while faceit anti-cheat is running",
                   "it can turn on when cs2 opens and start together with windows",
                   "custom interface color (#rrggbb), ukrainian language",
-                  "«about» now credits climbcore++ (@zenpakuzanjiro), which inspired skywalk"]),
+                  "«about» now credits climbcore++ (@zenpakuzanjiro), which inspired skywalk",
+                  "shared table (records tab, off by default): when on, the author sees your nick, records "
+                  "and that skywalk is running"]),
     ("demo 8.7", ["31 новая карта cybershoke с тирами (подсказки и тир в слежке), у 5 карт обновлён тир"],
                  ["31 new cybershoke maps with tiers (suggestions and tier in map watch), 5 tiers updated"]),
     ("demo 8.6", ["рекорды хранятся ещё и в отдельном файле — их не сотрёт даже старая версия программы"],
@@ -4288,6 +4398,9 @@ class App(ctk.CTk):
         self.rec_reset_btn = keycap(right, tr("reset_btn"), self.on_reset_records, width=100)
         self.rec_reset_btn.pack()
         self.rec_reset_armed = False
+        right = pill(self.rec_all, tr("share"), tr("share_sub"), height=46)     # общая таблица (по согласию)
+        Segmented(right, ("off", "on"), "on" if prefs["share"] else "off",
+                  lambda v: prefs.__setitem__("share", v == "on")).pack()
         # --- сессия ---
         self.rec_ses = ctk.CTkFrame(page, fg_color="transparent")
         self.ses_card = ctk.CTkFrame(self.rec_ses, fg_color=PANEL, corner_radius=20)
@@ -5755,6 +5868,7 @@ if __name__ == "__main__":
     listener.start()
     update_mouse_hook()                        # мышь перехватываем, только если -w на мыши
     threading.Thread(target=faceit_watch, daemon=True).start()
+    threading.Thread(target=cloud_worker, daemon=True).start()
     import threading
     import traceback
     threading.excepthook = lambda a: write_crash(          # ошибки в потоках (клавиатура, мышь, трей)
