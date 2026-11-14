@@ -32,3 +32,6 @@ Steam → CS2 → Свойства → Параметры запуска → `-c
 ---
 
 Автор: **blessed** · telegram [@nonelyyo](https://t.me/nonelyyo)
+
+Вдохновлено проектом **climbcore++** — спасибо его автору, telegram [@zenpakuzanjiro](https://t.me/zenpakuzanjiro).
+Inspired by **climbcore++** — thanks to its author, telegram [@zenpakuzanjiro](https://t.me/zenpakuzanjiro).
