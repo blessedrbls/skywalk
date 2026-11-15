@@ -27,7 +27,7 @@ from ctypes import wintypes
 import tkinter as tk
 
 import customtkinter as ctk
-from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageTk
 
 try:
     from PIL import ImageGrab           # «снимок» части экрана — для плавной смены вкладок
@@ -247,7 +247,7 @@ def active_window_title():
 
 
 
-VERSION = "demo 8.8"   # пока проект в демо — пишем «demo», без «v»
+VERSION = "demo 8.9"   # пока проект в демо — пишем «demo», без «v»
 
 # ================== Журнал событий (для поиска багов) ==================
 LOG = deque(maxlen=500)                 # последние 500 событий
@@ -1795,6 +1795,7 @@ TR = {
         "faceit_on": "faceit anti-cheat сейчас запущен", "faceit_hint": "faceit anti-cheat — выключено",
         "own_color": "свой цвет", "own_color_sub": "#rrggbb и enter",
         "autostart": "запускать с windows", "autostart_sub": "при входе в систему",
+        "background": "фон", "bg_stars": "звёзды", "bg_black": "чёрный",
         "share": "общая таблица", "share_sub": "отправлять автору ник, рекорды и онлайн",
             },
     "en": {
@@ -1897,6 +1898,7 @@ TR = {
         "faceit_on": "faceit anti-cheat is running now", "faceit_hint": "faceit anti-cheat — turned off",
         "own_color": "custom color", "own_color_sub": "#rrggbb and enter",
         "autostart": "start with windows", "autostart_sub": "when you sign in",
+        "background": "background", "bg_stars": "stars", "bg_black": "black",
         "share": "shared table", "share_sub": "send the author your nick, records and online",
             },
     "uk": {
@@ -1999,6 +2001,7 @@ TR = {
         "faceit_on": "faceit anti-cheat зараз запущено", "faceit_hint": "faceit anti-cheat — вимкнено",
         "own_color": "власний колір", "own_color_sub": "#rrggbb і enter",
         "autostart": "запускати з windows", "autostart_sub": "при вході в систему",
+        "background": "фон", "bg_stars": "зорі", "bg_black": "чорний",
         "share": "спільна таблиця", "share_sub": "надсилати автору нік, рекорди й онлайн",
             },
 }
@@ -2034,6 +2037,7 @@ DEFAULT_PREFS = {"accent": "blue", "overlay": False, "overlay_pos": "mr",  # п�
                  "share": False,             # отправлять автору ник, «программа запущена» и рекорды (только с согласия)
                  "shared": {},               # какие рекорды уже отправлены: {"LJ": 278.41}
                  "exe_path": "", "exe_version": "",   # где лежит последняя запущенная версия (.exe) и какая
+                 "background": "stars",      # фон окна: stars (звёздное небо) / black (как раньше)
                  "preset": "1", "presets": {},   # пресеты биндов: какой сейчас и что лежит в остальных
                  # слежка за картами на серверах Cybershoke
                  "steam_key": "", "watch_maps": [], "watch_regions": [], "watch_on": False,
@@ -2075,6 +2079,7 @@ def reset_settings():
     shared = prefs.get("shared", {})          # что уже отправлено — тоже знания, а не настройка
     exe = (prefs.get("exe_path", ""), prefs.get("exe_version", ""))
     prefs.clear()
+    set_theme(DEFAULT_PREFS["background"])
     prefs.update(DEFAULT_PREFS, watch_regions=[], watch_maps=[], steam_key=key, known_maps=known,
                  kz_servers=servers, records=records, history=history, shared=shared,
                  exe_path=exe[0], exe_version=exe[1])
@@ -2268,6 +2273,9 @@ def load_settings():
     for key in ("auto_on", "faceit_off", "share"):
         if isinstance(p.get(key), bool):
             prefs[key] = p[key]
+    if p.get("background") in THEMES:
+        prefs["background"] = p["background"]
+    set_theme(prefs["background"])
     for key in ("exe_path", "exe_version"):
         if isinstance(p.get(key), str):
             prefs[key] = p[key][:500]
@@ -2372,7 +2380,54 @@ def set_accent(name):
     globals().update(ACCENTS[name])
 
 
+# Фон окна. «звёзды» — ночное небо под всеми страницами (к названию sky·walk), «чёрный» — как было раньше.
+# Цвет фона у звёзд — сплошной тёмно-синий: элементы Tk рисуют под собой прямоугольник цвета фона,
+# и на однотонной основе неба эти прямоугольники не видны (видно только, что под текстом нет звёзд).
+THEMES = {
+    "stars": dict(BG="#0b0c1a", PANEL="#151625", KEYCAP="#090a15", HOVER="#1e2034"),
+    "black": dict(BG="#0b0b0d", PANEL="#151518", KEYCAP="#0a0a0c", HOVER="#1d1d22"),
+}
+
+
+def set_theme(name):
+    globals().update(THEMES[name if name in THEMES else "stars"])
+
+
+_sky_cache = {}
+
+
+def starfield(w, h, k):
+    """Звёздное небо w×h пикселей (k — масштаб экрана). Одинаковое при каждом запуске (seed),
+    чтобы звёзды не «прыгали» при смене вкладок. Основа — ровно цвет BG."""
+    key = (w, h, round(k, 2), BG)
+    if key in _sky_cache:
+        return _sky_cache[key]
+    import random
+    rnd = random.Random(7)
+    base = tuple(hex2rgb(BG))
+    img = Image.new("RGB", (w, h), base)
+    d = ImageDraw.Draw(img)
+    n = int(w * h / (k * k) / 1150)                  # ~260 звёзд на окно 440×700
+    for _ in range(n):
+        x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+        r = rnd.choice((0.45, 0.55, 0.7, 1.0)) * k
+        c = rnd.randint(110, 225)
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(c, c, min(255, c + 30)))
+    glow = Image.new("RGB", (w, h), (0, 0, 0))     # несколько ярких звёзд с мягким ореолом
+    gd = ImageDraw.Draw(glow)
+    for _ in range(max(3, n // 30)):
+        x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+        r = 3.2 * k
+        gd.ellipse([x - r, y - r, x + r, y + r], fill=(70, 80, 140))
+        d.ellipse([x - 1.3 * k, y - 1.3 * k, x + 1.3 * k, y + 1.3 * k], fill=(235, 238, 255))
+    img = ImageChops.add(img, glow.filter(ImageFilter.GaussianBlur(2.5 * k)))
+    _sky_cache.clear()
+    _sky_cache[key] = img
+    return img
+
+
 set_accent("blue")
+set_theme("stars")
 
 
 # ================== Частота кадров под монитор ==================
@@ -2616,6 +2671,79 @@ def bg_of(widget):
     return BG
 
 
+def sky_size(widget):
+    """Размер звёздного неба в пикселях: окно с запасом (страницы при смене чуть выезжают)."""
+    k = dpi_scale(widget)
+    w, h = (int(v) for v in WINDOW_SIZE.split("x"))
+    return round(w * k) + 8, round(h * k) + 8
+
+
+def sky_backdrop(app, container):
+    """Под прозрачную рамку (или само окно) кладём кусок неба — ровно тот, что под ней в окне.
+    Tk не умеет прозрачность: рамка закрасила бы небо цветом фона. Поэтому у каждой «прозрачной»
+    рамки своя картинка-подложка, а при сдвиге или изменении размера она перерезается."""
+    if getattr(container, "_sky", None) is not None:
+        return
+    lbl = tk.Label(container, bd=0, highlightthickness=0, bg=BG)
+    container._sky = lbl
+    lbl._key = None
+    lbl.place(x=0, y=0, relwidth=1, relheight=1)
+    canvas = getattr(container, "_canvas", None)          # у CTkFrame фон рисует его холст — встаём сразу над ним
+    if canvas is not None:
+        lbl.tk.call("raise", lbl._w, canvas._w)
+    else:
+        lbl.lower()
+
+    def update(e=None):
+        try:
+            if not lbl.winfo_exists():
+                return
+            w, h = container.winfo_width(), container.winfo_height()
+            if w < 2 or h < 2:
+                return
+            x = max(0, container.winfo_rootx() - app.winfo_rootx())
+            y = max(0, container.winfo_rooty() - app.winfo_rooty())
+            if lbl._key == (x, y, w, h):
+                return
+            lbl._key = (x, y, w, h)
+            sky = starfield(*sky_size(app), dpi_scale(app))
+            piece = Image.new("RGB", (w, h), BG)
+            piece.paste(sky.crop((x, y, min(sky.width, x + w), min(sky.height, y + h))), (0, 0))
+            lbl._photo = ImageTk.PhotoImage(piece)
+            lbl.configure(image=lbl._photo)
+        except tk.TclError:
+            pass
+
+    container.bind("<Configure>", update, add="+")
+    lbl.bind("<Map>", update, add="+")
+    container.after(50, update)
+
+
+def attach_sky(app):
+    """Подложить небо под само окно и под все прозрачные рамки, у которых сзади только фон окна
+    (рамки внутри «таблеток» не трогаем — у них свой цвет). Зовём после сборки и раз в секунду:
+    некоторые рамки создаются позже (карты, регионы)."""
+    if prefs["background"] != "stars":
+        return
+    sky_backdrop(app, app)
+    stack = list(app.winfo_children())
+    while stack:
+        w = stack.pop()
+        if isinstance(w, (Floating, MapToast)) or isinstance(w, tk.Toplevel):
+            continue
+        if isinstance(w, ctk.CTkFrame):
+            try:
+                if w.cget("fg_color") != "transparent":
+                    continue                              # «таблетка»/панель — внутрь не лезем
+            except Exception:
+                continue
+            sky_backdrop(app, w)
+        try:
+            stack.extend(w.winfo_children())
+        except tk.TclError:
+            pass
+
+
 def dpi_scale(widget):
     """Масштаб экрана Windows (100% → 1.0, 125% → 1.25 и т.д.)."""
     try:
@@ -2693,6 +2821,9 @@ class Title(tk.Label):
     def __init__(self, parent, w=440, h=150):
         k = dpi_scale(parent)
         self.pw, self.ph = round(w * k), round(h * k)          # размер в настоящих пикселях экрана
+        # фон под названием — кусок звёздного неба (название стоит в самом верху окна)
+        self.sky = (starfield(*sky_size(parent), k).crop((0, 0, self.pw, self.ph))
+                    if prefs["background"] == "stars" else None)
         self.glows = [self._glow(self.MIN_P + (self.MAX_P - self.MIN_P) * i / (self.LEVELS - 1))
                       for i in range(self.LEVELS)]
         self.font = load_font(round(38 * k), bold=True)
@@ -2723,14 +2854,19 @@ class Title(tk.Label):
                     d = math.hypot((x - sw / 2) / (sw * 0.42), (y - sh / 2) / (sh * 0.5))
                     px[x, y] = round(max(0.0, 1 - d) ** 2 * 255)
             Title._mask = mask
-        alpha = Title._mask.point(lambda v: int(v * strength))
-        img = Image.composite(Image.new("RGB", (sw, sh), GLOW), Image.new("RGB", (sw, sh), BG), alpha)
-        return img.resize((self.pw, self.ph), Image.BICUBIC)
+        alpha = Title._mask.point(lambda v: int(v * strength)).resize((self.pw, self.ph), Image.BICUBIC)
+        base = self.sky if self.sky is not None else Image.new("RGB", (self.pw, self.ph), BG)
+        return Image.composite(Image.new("RGB", (self.pw, self.ph), GLOW), base, alpha)
 
     def draw(self, strength, s_colors):
         """strength — сила свечения, s_colors — цвета букв «s», «k», «y»."""
         i = round((strength - self.MIN_P) / (self.MAX_P - self.MIN_P) * (self.LEVELS - 1))
-        img = self.glows[max(0, min(self.LEVELS - 1, i))].copy()
+        i = max(0, min(self.LEVELS - 1, i))
+        key = (i, tuple(s_colors))
+        if key == getattr(self, "last_key", None):
+            return                           # то же самое уже на экране
+        self.last_key = key
+        img = self.glows[i].copy()
         d = ImageDraw.Draw(img)
         colors = list(s_colors) + [TEXT] * (len(self.parts) - self.shine)
         for part, x, color in zip(self.parts, self.xs, colors):
@@ -3532,17 +3668,39 @@ class MapToast(tk.Toplevel):
         if t >= self.SHOW + 0.35:               # время вышло и исчезли — прячем
             self.hide()
             return
-        appear = smooth(min(1.0, t / 0.3))       # появление 0,3 сек
+        appear = ease_out(t / 0.3)               # появление 0,3 сек: быстро выезжает и мягко встаёт
         vanish = smooth(min(1.0, max(0.0, (self.SHOW + 0.35 - t) / 0.35)))   # исчезновение 0,35 сек
-        img = render_toast(self.k, self.map_name, self.info, self.ping, 1 - min(1.0, t / self.SHOW),
-                           self.logo, self.tier, self.title, self.hint, self.badge)
-        x = (self.winfo_screenwidth() - img.width) // 2
+        # Карточку рисуем ОДИН раз (без полоски), а каждый кадр только дорисовываем полоску «сколько
+        # осталось». Раньше вся карточка рисовалась заново 60 раз в секунду — прямо во время игры.
+        content = (self.map_name, self.info, self.ping, self.tier, self.title, self.hint, self.badge)
+        if getattr(self, "base_key", None) != content:
+            self.base_key = content
+            self.base = render_toast(self.k, self.map_name, self.info, self.ping, 0.0,
+                                     self.logo, self.tier, self.title, self.hint, self.badge)
+            w, h = self.base.size
+            z = self.k * 0.88
+            self.bar_h, self.bar_mask = max(1, round(3 * z)), Image.new("L", (w, h), 0)
+            ImageDraw.Draw(self.bar_mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=18 * z, fill=255)
+            self.shown = None
+        w, h = self.base.size
+        bar = round(w * (1 - min(1.0, t / self.SHOW)))
+        x = (self.winfo_screenwidth() - w) // 2
         # сверху по центру, но ниже игровых надписей (таймер KZ и т.п.); выезжает сверху
         y = round(self.winfo_screenheight() * 0.11 - (1 - appear) * 24 * self.k) + self.y_shift
-        self.tk.call("wm", "geometry", self._w, f"{img.width}x{img.height}+{x}+{y}")
-        if self.hwnd:
-            show_layered(self.hwnd, img, min(appear, vanish))
-        self.after(16, self.step)                 # 60 кадров — карточке больше не нужно
+        alpha = min(appear, vanish)
+        frame = (bar, round(alpha * 255), y)
+        if frame != self.shown:                   # ничего не сдвинулось на целый пиксель — кадр не нужен
+            self.shown = frame
+            img = self.base.copy()
+            if bar > 0:
+                layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                ImageDraw.Draw(layer).rectangle([0, h - self.bar_h, bar, h], fill=tuple(hex2rgb(ACCENT)) + (255,))
+                layer.putalpha(ImageChops.multiply(layer.getchannel("A"), self.bar_mask))
+                img.alpha_composite(layer)
+            self.tk.call("wm", "geometry", self._w, f"{w}x{h}+{x}+{y}")
+            if self.hwnd:
+                show_layered(self.hwnd, img, alpha)
+        self.after(FRAME_MS if t < 0.3 or t > self.SHOW else 16, self.step)   # выезд/уход — с частотой монитора
 
     def click(self, e=None):
         if self.server:
@@ -3602,6 +3760,15 @@ COACH_TYPES = ("LJ", "BH", "MBH", "WJ", "LAJ")
 # ================== Журнал версий («что нового») ==================
 # Новые версии — СВЕРХУ. Пишем коротко и понятно для игрока, строчными, без технических слов.
 CHANGELOG = [
+    ("demo 8.9", ["новый фон — звёздное небо (⚙ → интерфейс → фон, можно вернуть чёрный)",
+                  "«запускать с windows» переехал в бинды → управление",
+                  "анимации плавнее и легче: окно в простое нагружает процессор вдвое меньше, "
+                  "уведомление в игре больше не перерисовывается целиком 60 раз в секунду, "
+                  "переключатели доезжают ровно и мягко"],
+                 ["new background — a starry sky (⚙ → interface → background, black is still there)",
+                  "«start with windows» moved to binds → control",
+                  "smoother and lighter animations: the idle window uses half the cpu, the in-game "
+                  "notification no longer redraws itself 60 times a second, switches glide evenly"]),
     ("demo 8.8", ["новые бинды: instastrafe влево / вправо (и с приседом), повороты мышью со своей скоростью",
                   "бинды разложены по подвкладкам: прыжки, стрейфы, управление",
                   "panic клавиша — всё выключить и спрятать окно",
@@ -3967,6 +4134,15 @@ def grab_screen(w):
         return None
 
 
+SHIM_STEPS = 40                     # ступенек перелива названия на один круг
+
+
+def ease_out(k):
+    """Быстрый старт и мягкая остановка (кубическая): для всего, что «доезжает» до места."""
+    k = max(0.0, min(1.0, k))
+    return 1 - (1 - k) ** 3
+
+
 def smooth(k):
     """Плавный разгон и торможение: 0 → 1 по S-образной кривой."""
     return k * k * (3 - 2 * k)
@@ -4012,9 +4188,19 @@ class Segmented(tk.Label):
             self.redraw()
             self.command(self.values[i])
         elif i != int(round(self.target)):
-            self.target = float(i)
-            self.animate()
+            self.go(i)
             self.command(self.values[i])
+
+    SLIDE = 0.24                             # сколько секунд «таблетка» едет до нового места
+
+    def go(self, i):
+        """Поехать к варианту i: с того места, где таблетка сейчас (даже посреди прошлой поездки)."""
+        self.target = float(i)
+        self.from_pos = self.pos
+        self.start = time.perf_counter()
+        if self.last is None:
+            self.last = self.start
+            self.animate()
 
     def hide(self):
         self.hidden = True
@@ -4023,12 +4209,11 @@ class Segmented(tk.Label):
     def animate(self):
         if not self.winfo_exists():          # окно пересобрали (смена языка) — стоп
             return
-        now = time.perf_counter()
-        dt = min(0.05, now - (self.last or now - 1 / 60))   # первый кадр анимации — как 1/60 сек
-        self.last = now
-        self.pos += (self.target - self.pos) * ease(0.28, dt)
-        if abs(self.target - self.pos) < 0.01:
+        k = (time.perf_counter() - getattr(self, "start", 0.0)) / self.SLIDE
+        if k >= 1.0 or not hasattr(self, "from_pos"):
             self.pos = self.target
+        else:                                # быстро трогается и мягко останавливается — ровно за SLIDE
+            self.pos = self.from_pos + (self.target - self.from_pos) * ease_out(k)
         self.redraw()
         if self.pos != self.target:
             self.after(FRAME_MS, self.animate)
@@ -4235,6 +4420,7 @@ class App(ctk.CTk):
         self.hint.pack(side="right", padx=(0, 14))
 
         self.show_tab(tab)
+        attach_sky(self)                      # звёздное небо под всеми прозрачными рамками
 
     # ---------- перетаскивание окна за название ----------
     def drag_start(self, e):
@@ -4260,6 +4446,8 @@ class App(ctk.CTk):
         for w in self.winfo_children():
             if not isinstance(w, (Floating, MapToast)):   # оверлей и уведомление оставляем
                 w.destroy()
+        self._sky = None                      # подложку окна тоже собираем заново (цвет фона мог смениться)
+        self.configure(fg_color=BG)
         self.build(tab=tab or self.SETTINGS)
 
     # ---------- вкладка «нуллы» ----------
@@ -4369,6 +4557,10 @@ class App(ctk.CTk):
         right = pill(control, tr("auto_on"), tr("auto_on_sub"), height=46)
         Segmented(right, ("off", "on"), "on" if prefs["auto_on"] else "off",
                   lambda v: prefs.__setitem__("auto_on", v == "on")).pack()
+
+        right = pill(control, tr("autostart"), tr("autostart_sub"), height=46)
+        Segmented(right, ("off", "on"), "on" if autostart_on() else "off",
+                  lambda v: set_autostart(v == "on")).pack()
 
         right = pill(control, tr("faceit_off"), tr("faceit_off_sub"), height=46)
         Segmented(right, ("off", "on"), "on" if prefs["faceit_off"] else "off",
@@ -5239,6 +5431,10 @@ class App(ctk.CTk):
                           border_width=2 if chosen else 0, border_color=TEXT,
                           command=lambda n=name: self.on_accent(n)).pack(side="right", padx=3)
 
+        right = pill(page, tr("background"), height=46)
+        Segmented(right, tuple(THEMES), prefs["background"], self.on_background, seg_w=70,
+                  labels=[tr("bg_" + t) for t in THEMES]).pack()
+
         right = pill(page, tr("own_color"), tr("own_color_sub"), height=46)   # свой цвет: #rrggbb + Enter
         color_entry = ctk.CTkEntry(right, width=110, height=30, corner_radius=15, fg_color=KEYCAP,
                                    border_color=KEYCAP, text_color=TEXT, font=font(12),
@@ -5259,9 +5455,6 @@ class App(ctk.CTk):
         Segmented(right, ("off", "on"), "on" if prefs["tray"] else "off",
                   lambda v: prefs.__setitem__("tray", v == "on")).pack()
 
-        right = pill(page, tr("autostart"), tr("autostart_sub"), height=46)
-        Segmented(right, ("off", "on"), "on" if autostart_on() else "off",
-                  lambda v: set_autostart(v == "on")).pack()
 
         right = pill(page, tr("reset"), tr("reset_sub"), height=46)
         self.reset_btn = keycap(right, tr("reset_btn"), self.on_reset, width=100)
@@ -5361,6 +5554,11 @@ class App(ctk.CTk):
         prefs["accent"] = name
         set_accent(name)
         self.after(30, self.rebuild)          # перерисовываем всё новым цветом
+
+    def on_background(self, name):
+        prefs["background"] = name
+        set_theme(name)
+        self.after(220, self.rebuild)         # переключатель доедет — и перекрасим окно
 
     def on_own_color(self, text):
         """Свой цвет акцента: «#rrggbb» (решётку можно не писать). Неправильный ввод просто не применяем."""
@@ -5548,7 +5746,10 @@ class App(ctk.CTk):
 
     def pick_frame_ms(self):
         """Режим экономии: как часто крутить главный цикл.
-        Окно открыто и мы не в игре — с частотой монитора (анимации плавные).
+        Окно открыто и мы не в игре — 60 раз в секунду: всё, что крутит главный цикл (свечение, перелив
+          названия, цвета кнопок, шестерёнка), медленное — больше 60 кадров глаз не заметит, а на мониторе
+          144 Гц это в 2,4 раза меньше работы. Быстрые анимации (смена вкладок и страниц, переключатели,
+          карточки, уведомления) идут своими циклами с частотой монитора.
         Окно в трее/свёрнуто или играем в CS2 — смотреть на окно некому:
           оверлей виден или плавно появляется/прячется — 30 кадров в секунду (точке хватит),
           иначе — 10 раз в секунду (только трей, слежка за картами и сохранение)."""
@@ -5556,7 +5757,7 @@ class App(ctk.CTk):
             return FRAME_MS
         hidden = self.state() in ("withdrawn", "iconic")
         if not hidden and not self.cs2_active:
-            return FRAME_MS
+            return max(FRAME_MS, 16)
         ov = self.overlay
         if ov is not None and (ov.alpha > 0 or self.overlay_edit or self.t < self.preview_until
                                or self.cs2_active):
@@ -5633,19 +5834,24 @@ class App(ctk.CTk):
         target = (0.38 + 0.2 * pulse if on else 0.1) + self.burst
         self.glow += (target - self.glow) * ease(0.12, dt)
         hidden = self.state() in ("withdrawn", "iconic")  # окно в трее или свёрнуто — не тратим силы на анимации
-        if now >= self.next_title and not hidden and self.fade is None:  # название — до 60 раз в секунду
-            self.next_title = now + 1 / 60
-            waves = [(math.sin(self.t * 3.2 - i * 0.9) + 1) / 2 for i in range(self.title_img.shine)]
+        # название — не чаще 30 раз в секунду: свечение «дышит» и цвет переливается медленно, разницу
+        # с 60 кадрами глаз не видит, а картинка у названия самая большая в окне
+        if now >= self.next_title and not hidden and self.fade is None:
+            self.next_title = now + 1 / 30
+            # перелив идёт ступеньками (SHIM_STEPS на круг): все буквы меняются в один кадр, а между
+            # ступеньками картинка та же — её и не перерисовываем
+            q = round(self.t * 3.2 / math.tau * SHIM_STEPS) * math.tau / SHIM_STEPS
+            waves = [(math.sin(q - i * 0.9) + 1) / 2 for i in range(self.title_img.shine)]
             self.title_img.draw(self.glow, [shimmer(w) for w in waves])
 
         if on:
             self._set(self.status, "st", text="on")
             tw.to(self.status, "text_color", TEXT)
-            self.dot.configure(text_color=mix(ACCENT_DIM, ACCENT, pulse))
+            self._set(self.dot, "dot", text_color=mix(ACCENT_DIM, ACCENT, round(pulse * 24) / 24))
         else:
             self._set(self.status, "st", text="off")
             tw.to(self.status, "text_color", MUTED)
-            self.dot.configure(text_color=MUTED)
+            self._set(self.dot, "dot", text_color=MUTED)
         blocked = faceit_blocked()
         self._set(self.hint, "hint", text=tr("faceit_hint") if blocked
                   else tr("hint", key=state["toggle_name"].lower()))
@@ -5715,6 +5921,7 @@ class App(ctk.CTk):
         # шёл к её настоящему виду и в конце ничего не «прыгало»
         if now >= self.next_snap and self.fade is None and not hidden and self.sugg is None:
             self.next_snap = now + 1.0
+            attach_sky(self)                  # новые рамки (карты, регионы) тоже получают небо
             if self.tab == self.SETTINGS:
                 self.remember(self.subholder, "sub:" + self.sub)
                 self.remember(self.holder, self.SETTINGS)
