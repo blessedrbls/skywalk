@@ -247,7 +247,7 @@ def active_window_title():
 
 
 
-VERSION = "demo 8.9"   # пока проект в демо — пишем «demo», без «v»
+VERSION = "demo 8.10"   # пока проект в демо — пишем «demo», без «v»
 
 # ================== Журнал событий (для поиска багов) ==================
 LOG = deque(maxlen=500)                 # последние 500 событий
@@ -1795,7 +1795,7 @@ TR = {
         "faceit_on": "faceit anti-cheat сейчас запущен", "faceit_hint": "faceit anti-cheat — выключено",
         "own_color": "свой цвет", "own_color_sub": "#rrggbb и enter",
         "autostart": "запускать с windows", "autostart_sub": "при входе в систему",
-        "background": "фон", "bg_stars": "звёзды", "bg_black": "чёрный",
+        "background": "фон", "bg_live": "живой", "bg_stars": "звёзды", "bg_black": "чёрный",
         "share": "общая таблица", "share_sub": "отправлять автору ник, рекорды и онлайн",
             },
     "en": {
@@ -1898,7 +1898,7 @@ TR = {
         "faceit_on": "faceit anti-cheat is running now", "faceit_hint": "faceit anti-cheat — turned off",
         "own_color": "custom color", "own_color_sub": "#rrggbb and enter",
         "autostart": "start with windows", "autostart_sub": "when you sign in",
-        "background": "background", "bg_stars": "stars", "bg_black": "black",
+        "background": "background", "bg_live": "live", "bg_stars": "stars", "bg_black": "black",
         "share": "shared table", "share_sub": "send the author your nick, records and online",
             },
     "uk": {
@@ -2001,7 +2001,7 @@ TR = {
         "faceit_on": "faceit anti-cheat зараз запущено", "faceit_hint": "faceit anti-cheat — вимкнено",
         "own_color": "власний колір", "own_color_sub": "#rrggbb і enter",
         "autostart": "запускати з windows", "autostart_sub": "при вході в систему",
-        "background": "фон", "bg_stars": "зорі", "bg_black": "чорний",
+        "background": "фон", "bg_live": "живий", "bg_stars": "зорі", "bg_black": "чорний",
         "share": "спільна таблиця", "share_sub": "надсилати автору нік, рекорди й онлайн",
             },
 }
@@ -2037,7 +2037,7 @@ DEFAULT_PREFS = {"accent": "blue", "overlay": False, "overlay_pos": "mr",  # п�
                  "share": False,             # отправлять автору ник, «программа запущена» и рекорды (только с согласия)
                  "shared": {},               # какие рекорды уже отправлены: {"LJ": 278.41}
                  "exe_path": "", "exe_version": "",   # где лежит последняя запущенная версия (.exe) и какая
-                 "background": "stars",      # фон окна: stars (звёздное небо) / black (как раньше)
+                 "background": "live",       # фон окна: live (живое небо) / stars (неподвижное) / black (как раньше)
                  "preset": "1", "presets": {},   # пресеты биндов: какой сейчас и что лежит в остальных
                  # слежка за картами на серверах Cybershoke
                  "steam_key": "", "watch_maps": [], "watch_regions": [], "watch_on": False,
@@ -2384,13 +2384,22 @@ def set_accent(name):
 # Цвет фона у звёзд — сплошной тёмно-синий: элементы Tk рисуют под собой прямоугольник цвета фона,
 # и на однотонной основе неба эти прямоугольники не видны (видно только, что под текстом нет звёзд).
 THEMES = {
+    "live": dict(BG="#0b0c1a", PANEL="#151625", KEYCAP="#090a15", HOVER="#1e2034"),    # звёзды + мерцание и метеоры
     "stars": dict(BG="#0b0c1a", PANEL="#151625", KEYCAP="#090a15", HOVER="#1e2034"),
     "black": dict(BG="#0b0b0d", PANEL="#151518", KEYCAP="#0a0a0c", HOVER="#1d1d22"),
 }
 
 
 def set_theme(name):
-    globals().update(THEMES[name if name in THEMES else "stars"])
+    globals().update(THEMES[name if name in THEMES else "live"])
+
+
+def sky_on():
+    return prefs["background"] in ("live", "stars")
+
+
+def live_on():
+    return prefs["background"] == "live"
 
 
 _sky_cache = {}
@@ -2671,6 +2680,116 @@ def bg_of(widget):
     return BG
 
 
+# ---------- живое небо: мерцающие звёзды и метеоры ----------
+# Перерисовывать всё небо каждый кадр — дорого (это картинка во всё окно). Поэтому мерцают отдельные
+# звёзды: каждая — крошечная картинка 7×7 пикселей поверх неба, и в кадре ей лишь подменяется одна из
+# 16 готовых яркостей. Метеоры пролетают только в шапке — её картинка и так перерисовывается.
+TWINKLE_LEVELS = 16
+_twinkle_cache = {}
+TWINKLE_LABELS = []                       # все живые звёзды-картинки (чистим, когда их рамку удалили)
+
+
+def twinkle_stars(w, h, k):
+    """Мерцающие звёзды: свои места (не те, что на неподвижном небе), одинаковые при каждом запуске."""
+    key = ("stars", w, h, round(k, 2))
+    if key not in _twinkle_cache:
+        import random
+        rnd = random.Random(23)
+        n = max(12, int(w * h / (k * k) / 11000))       # ~28 на окно
+        _twinkle_cache[key] = [dict(x=rnd.uniform(0, w), y=rnd.uniform(0, h), big=rnd.random() < 0.3,
+                                    phase=rnd.random(), speed=rnd.uniform(0.12, 0.35)) for _ in range(n)]
+    return _twinkle_cache[key]
+
+
+def twinkle_frame(big, level, k):
+    """Звезда заданной яркости на фоне неба: маленькая RGB-картинка (готовые 16 яркостей на размер)."""
+    key = ("frame", big, level, round(k, 2), BG)
+    img = _twinkle_cache.get(key)
+    if img is None:
+        box = max(5, round((9 if big else 7) * k)) | 1
+        S = 4
+        a = level / (TWINKLE_LEVELS - 1)
+        base = tuple(hex2rgb(BG))
+        big_img = Image.new("RGB", (box * S, box * S), base)
+        glow = Image.new("RGB", big_img.size, (0, 0, 0))
+        c = box * S / 2
+        r = (1.3 if big else 0.85) * k * S
+        ImageDraw.Draw(glow).ellipse([c - r * 2.6, c - r * 2.6, c + r * 2.6, c + r * 2.6],
+                                     fill=tuple(round(v * a * 0.55) for v in (70, 85, 160)))
+        big_img = ImageChops.add(big_img, glow.filter(ImageFilter.GaussianBlur(r * 1.1)))
+        col = tuple(round(b + (t - b) * a) for b, t in zip(base, (225, 230, 255)))
+        ImageDraw.Draw(big_img).ellipse([c - r, c - r, c + r, c + r], fill=col)
+        img = big_img.resize((box, box), Image.LANCZOS)
+        _twinkle_cache[key] = img
+    return img
+
+
+def twinkle_photos(big, k):
+    """Готовые картинки Tk для всех 16 яркостей — одни на все звёзды этого размера."""
+    key = ("photo", big, round(k, 2), BG)
+    if key not in _twinkle_cache:
+        _twinkle_cache[key] = [ImageTk.PhotoImage(twinkle_frame(big, lv, k)) for lv in range(TWINKLE_LEVELS)]
+    return _twinkle_cache[key]
+
+
+def twinkle_level(star, t):
+    """Яркость звезды сейчас (0..15): почти всё время тусклая, иногда коротко вспыхивает."""
+    v = (math.sin(math.tau * (t * star["speed"] + star["phase"])) + 1) / 2
+    return round((0.18 + 0.82 * v ** 3) * (TWINKLE_LEVELS - 1))
+
+
+def place_twinkles(app, container, sky_label, x, y, w, h):
+    """Посадить мерцающие звёзды, попавшие в рамку, поверх её куска неба (под всем остальным в рамке)."""
+    for old in getattr(container, "_twinkles", []):
+        try:
+            old.destroy()
+        except tk.TclError:
+            pass
+    container._twinkles = []
+    if not live_on():
+        return
+    k = dpi_scale(app)
+    for st in twinkle_stars(*sky_size(app), k):
+        if not (x <= st["x"] < x + w and y <= st["y"] < y + h):
+            continue
+        frames = twinkle_photos(st["big"], k)
+        box = frames[0].width()
+        lbl = tk.Label(container, bd=0, highlightthickness=0, bg=BG, image=frames[0])
+        lbl.place(x=round(st["x"] - x - box / 2), y=round(st["y"] - y - box / 2))
+        lbl.tk.call("raise", lbl._w, sky_label._w)        # над небом, но под всем содержимым рамки
+        lbl._frames, lbl._star, lbl._lvl = frames, st, 0
+        container._twinkles.append(lbl)
+        TWINKLE_LABELS.append(lbl)
+
+
+_twinkle_check = {"next": 0.0}
+
+
+def step_twinkles(t):
+    """Раз в 1/20 с: каждой звезде — её яркость. Картинку меняем, только если яркость сменилась.
+    Раз в секунду смотрим, какие звёзды вообще видно (не закрыты плашками) — мерцают только они."""
+    alive = []
+    check = time.perf_counter() >= _twinkle_check["next"]
+    if check:
+        _twinkle_check["next"] = time.perf_counter() + 1.0
+    for lbl in TWINKLE_LABELS:
+        try:
+            if check:
+                c = lbl.winfo_rootx() + lbl.winfo_width() // 2, lbl.winfo_rooty() + lbl.winfo_height() // 2
+                lbl._vis = lbl.winfo_ismapped() and lbl.winfo_containing(*c) is lbl
+            if not getattr(lbl, "_vis", True):
+                alive.append(lbl)
+                continue
+            lv = twinkle_level(lbl._star, t)
+            if lv != lbl._lvl:
+                lbl._lvl = lv
+                lbl.configure(image=lbl._frames[lv])
+            alive.append(lbl)
+        except tk.TclError:
+            pass                                          # рамку удалили (смена языка, вкладки) — звезды нет
+    TWINKLE_LABELS[:] = alive
+
+
 def sky_size(widget):
     """Размер звёздного неба в пикселях: окно с запасом (страницы при смене чуть выезжают)."""
     k = dpi_scale(widget)
@@ -2711,6 +2830,7 @@ def sky_backdrop(app, container):
             piece.paste(sky.crop((x, y, min(sky.width, x + w), min(sky.height, y + h))), (0, 0))
             lbl._photo = ImageTk.PhotoImage(piece)
             lbl.configure(image=lbl._photo)
+            place_twinkles(app, container, lbl, x, y, w, h)
         except tk.TclError:
             pass
 
@@ -2723,7 +2843,7 @@ def attach_sky(app):
     """Подложить небо под само окно и под все прозрачные рамки, у которых сзади только фон окна
     (рамки внутри «таблеток» не трогаем — у них свой цвет). Зовём после сборки и раз в секунду:
     некоторые рамки создаются позже (карты, регионы)."""
-    if prefs["background"] != "stars":
+    if not sky_on():
         return
     sky_backdrop(app, app)
     stack = list(app.winfo_children())
@@ -2821,9 +2941,11 @@ class Title(tk.Label):
     def __init__(self, parent, w=440, h=150):
         k = dpi_scale(parent)
         self.pw, self.ph = round(w * k), round(h * k)          # размер в настоящих пикселях экрана
+        self.k = k
+        self._hstars = None
         # фон под названием — кусок звёздного неба (название стоит в самом верху окна)
         self.sky = (starfield(*sky_size(parent), k).crop((0, 0, self.pw, self.ph))
-                    if prefs["background"] == "stars" else None)
+                    if sky_on() else None)
         self.glows = [self._glow(self.MIN_P + (self.MAX_P - self.MIN_P) * i / (self.LEVELS - 1))
                       for i in range(self.LEVELS)]
         self.font = load_font(round(38 * k), bold=True)
@@ -2838,6 +2960,49 @@ class Title(tk.Label):
         self.baseline = self.ph / 2 - (top + bottom) / 2      # чтобы надпись стояла ровно по центру
         self.photo = ImageTk.PhotoImage(self.glows[0])
         super().__init__(parent, image=self.photo, bd=0, highlightthickness=0, bg=BG)
+
+    def header_stars(self):
+        """Мерцающие звёзды, которые попали в шапку (их рисует сама картинка названия)."""
+        if self._hstars is None:
+            self._hstars = [st for st in twinkle_stars(*sky_size(self.master), self.k)
+                            if 4 <= st["x"] < self.pw - 4 and 4 <= st["y"] < self.ph - 4]
+        return self._hstars
+
+    def box_of(self, st, fr):
+        x, y = round(st["x"] - fr.width / 2), round(st["y"] - fr.height / 2)
+        return (x, y, x + fr.width, y + fr.height)
+
+    def draw_meteor(self, img, p, start, end):
+        """Метеор: яркая голова и тающий хвост. p — доля пути (0..1); появляется и гаснет плавно."""
+        a = math.sin(math.pi * min(1.0, max(0.0, p)))      # яркость: 0 → 1 → 0
+        hx, hy = start[0] + (end[0] - start[0]) * ease_out(p), start[1] + (end[1] - start[1]) * ease_out(p)
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        n = math.hypot(dx, dy) or 1
+        tail = 120 * self.k * (0.45 + 0.55 * a)
+        tx, ty = hx - dx / n * tail, hy - dy / n * tail
+        # рисуем только в маленьком куске вокруг метеора (размывать всю шапку каждый кадр — дорого)
+        m = round(10 * self.k)
+        x0, y0 = max(0, int(min(hx, tx)) - m), max(0, int(min(hy, ty)) - m)
+        x1, y1 = min(img.width, int(max(hx, tx)) + m + 1), min(img.height, int(max(hy, ty)) + m + 1)
+        if x1 <= x0 or y1 <= y0:
+            return
+        layer = Image.new("RGBA", (x1 - x0, y1 - y0), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        steps = 14
+        for j in range(steps):                               # хвост — отрезки, тающие к концу
+            f0, f1 = j / steps, (j + 1) / steps
+            p0 = (hx - dx / n * tail * f0 - x0, hy - dy / n * tail * f0 - y0)
+            p1 = (hx - dx / n * tail * f1 - x0, hy - dy / n * tail * f1 - y0)
+            d.line([p0, p1], fill=(215, 225, 255, round(255 * a * (1 - f0) ** 1.4)),
+                   width=max(1, round(self.k * (2.2 - 1.4 * f0))))
+        r = 2.0 * self.k
+        d.ellipse([hx - x0 - r, hy - y0 - r, hx - x0 + r, hy - y0 + r], fill=(240, 245, 255, round(255 * a)))
+        piece = img.crop((x0, y0, x1, y1)).convert("RGBA")
+        glow = layer.filter(ImageFilter.GaussianBlur(3 * self.k))
+        piece.alpha_composite(glow)
+        piece.alpha_composite(glow)                           # дважды — ореол заметнее
+        piece.alpha_composite(layer)
+        img.paste(piece.convert("RGB"), (x0, y0))
 
     _mask = None                             # форма свечения (0..255) — считается один раз на всю программу
 
@@ -2858,15 +3023,24 @@ class Title(tk.Label):
         base = self.sky if self.sky is not None else Image.new("RGB", (self.pw, self.ph), BG)
         return Image.composite(Image.new("RGB", (self.pw, self.ph), GLOW), base, alpha)
 
-    def draw(self, strength, s_colors):
-        """strength — сила свечения, s_colors — цвета букв «s», «k», «y»."""
+    def draw(self, strength, s_colors, t=0.0, meteor=None):
+        """strength — сила свечения, s_colors — цвета букв «s», «k», «y».
+        t — время (для мерцающих звёзд в шапке), meteor — (доля пути 0..1, откуда, куда) или None."""
         i = round((strength - self.MIN_P) / (self.MAX_P - self.MIN_P) * (self.LEVELS - 1))
         i = max(0, min(self.LEVELS - 1, i))
-        key = (i, tuple(s_colors))
+        stars = self.header_stars() if live_on() else []
+        levels = tuple(twinkle_level(st, t) for st in stars)
+        mkey = None if meteor is None else round(meteor[0] * 90)
+        key = (i, tuple(s_colors), levels, mkey)
         if key == getattr(self, "last_key", None):
             return                           # то же самое уже на экране
         self.last_key = key
         img = self.glows[i].copy()
+        for st, lv in zip(stars, levels):    # мерцающие звёзды шапки — прямо в картинку названия
+            fr = twinkle_frame(st["big"], lv, self.k)
+            img.paste(ImageChops.lighter(img.crop(self.box_of(st, fr)), fr), self.box_of(st, fr)[:2])
+        if meteor is not None:
+            self.draw_meteor(img, *meteor)
         d = ImageDraw.Draw(img)
         colors = list(s_colors) + [TEXT] * (len(self.parts) - self.shine)
         for part, x, color in zip(self.parts, self.xs, colors):
@@ -3760,6 +3934,10 @@ COACH_TYPES = ("LJ", "BH", "MBH", "WJ", "LAJ")
 # ================== Журнал версий («что нового») ==================
 # Новые версии — СВЕРХУ. Пишем коротко и понятно для игрока, строчными, без технических слов.
 CHANGELOG = [
+    ("demo 8.10", ["живое небо: звёзды мерцают, по шапке иногда пролетает метеор (⚙ → интерфейс → фон: живой / "
+                   "звёзды / чёрный); в игре и когда окно свёрнуто — не оживляется и не тратит силы"],
+                  ["live sky: stars twinkle and a meteor sometimes crosses the header (⚙ → interface → background: "
+                   "live / stars / black); it pauses in game and when the window is hidden"]),
     ("demo 8.9", ["новый фон — звёздное небо (⚙ → интерфейс → фон, можно вернуть чёрный)",
                   "«запускать с windows» переехал в бинды → управление",
                   "анимации плавнее и легче: окно в простое нагружает процессор вдвое меньше, "
@@ -5432,7 +5610,7 @@ class App(ctk.CTk):
                           command=lambda n=name: self.on_accent(n)).pack(side="right", padx=3)
 
         right = pill(page, tr("background"), height=46)
-        Segmented(right, tuple(THEMES), prefs["background"], self.on_background, seg_w=70,
+        Segmented(right, tuple(THEMES), prefs["background"], self.on_background, seg_w=62,
                   labels=[tr("bg_" + t) for t in THEMES]).pack()
 
         right = pill(page, tr("own_color"), tr("own_color_sub"), height=46)   # свой цвет: #rrggbb + Enter
@@ -5836,13 +6014,37 @@ class App(ctk.CTk):
         hidden = self.state() in ("withdrawn", "iconic")  # окно в трее или свёрнуто — не тратим силы на анимации
         # название — не чаще 30 раз в секунду: свечение «дышит» и цвет переливается медленно, разницу
         # с 60 кадрами глаз не видит, а картинка у названия самая большая в окне
+        live = live_on() and not hidden and not self.cs2_active      # в игре окна не видно — небо не оживляем
+        if live and now >= getattr(self, "next_twinkle", 0.0):   # мерцание звёзд — 20 раз в секунду
+            self.next_twinkle = now + 1 / 20
+            step_twinkles(self.t)
+        meteor = None
+        if live:                                  # метеор в шапке — раз в 6–14 с, летит 0,9 с
+            m = getattr(self, "meteor", None)
+            if m is None and self.t >= getattr(self, "meteor_next", 4.0):
+                import random
+                tp = self.title_img
+                x0 = random.uniform(tp.pw * 0.35, tp.pw * 0.95)
+                y0 = random.uniform(tp.ph * 0.05, tp.ph * 0.35)
+                ang = math.radians(random.uniform(150, 165))           # влево и чуть вниз
+                ln = random.uniform(0.35, 0.55) * tp.pw
+                m = self.meteor = dict(t0=self.t, a=(x0, y0), b=(x0 + ln * math.cos(ang), y0 + ln * math.sin(ang)))
+            if m is not None:
+                p = (self.t - m["t0"]) / 0.9
+                if p >= 1.0:
+                    import random
+                    self.meteor = None
+                    self.meteor_next = self.t + random.uniform(6, 14)
+                else:
+                    meteor = (p, m["a"], m["b"])
+                    self.next_title = min(self.next_title, now)          # пока летит — 60 кадров
         if now >= self.next_title and not hidden and self.fade is None:
-            self.next_title = now + 1 / 30
+            self.next_title = now + (1 / 60 if meteor is not None else 1 / 30)
             # перелив идёт ступеньками (SHIM_STEPS на круг): все буквы меняются в один кадр, а между
             # ступеньками картинка та же — её и не перерисовываем
             q = round(self.t * 3.2 / math.tau * SHIM_STEPS) * math.tau / SHIM_STEPS
             waves = [(math.sin(q - i * 0.9) + 1) / 2 for i in range(self.title_img.shine)]
-            self.title_img.draw(self.glow, [shimmer(w) for w in waves])
+            self.title_img.draw(self.glow, [shimmer(w) for w in waves], self.t, meteor)
 
         if on:
             self._set(self.status, "st", text="on")
